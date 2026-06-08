@@ -13,10 +13,24 @@ const { checkAndAlert } = require('./services/alert');
 const { syncAll } = require('./services/sync');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
+const HOST = process.env.HOST || '0.0.0.0'; // listen on all interfaces by default for remote access
 const app = express();
+
+// Trust reverse proxy (nginx / cloud LB) so req.ip / protocol work correctly
+app.set('trust proxy', true);
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Permissive CORS so the UI can be opened from another host/domain if needed
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Admin-Token,Authorization');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
 
 // Simple admin-token guard for /api (optional). When ADMIN_TOKEN is empty, no auth.
 app.use('/api', (req, res, next) => {
@@ -68,10 +82,20 @@ if (cron.validate(syncCron)) {
   console.warn(`[cron] invalid SYNC_CRON: "${syncCron}", scheduler disabled.`);
 }
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
+  const os = require('os');
+  const ips = [];
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const ni of nets[name] || []) {
+      if (ni.family === 'IPv4' && !ni.internal) ips.push(ni.address);
+    }
+  }
   console.log(`\n  BCDN Fusion is running:`);
-  console.log(`    UI : http://localhost:${PORT}/`);
-  console.log(`    API: http://localhost:${PORT}/api/customers`);
-  if (process.env.ADMIN_TOKEN) console.log(`    Admin token guard: ON`);
+  console.log(`    Listen : ${HOST}:${PORT}`);
+  console.log(`    Local  : http://localhost:${PORT}/`);
+  ips.forEach(ip => console.log(`    LAN    : http://${ip}:${PORT}/`));
+  console.log(`    API    : http://localhost:${PORT}/api/customers`);
+  if (process.env.ADMIN_TOKEN) console.log(`    Admin token guard: ON (header: X-Admin-Token)`);
   console.log('');
 });
