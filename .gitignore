@@ -1,0 +1,21 @@
+node_modules/
+
+# database & runtime data, but keep the API-spec docs under data/md/
+data/*
+!data/md/
+!data/md/**
+
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.log
+.env
+.DS_Store
+
+# editor / OS noise
+.vscode/
+.idea/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
