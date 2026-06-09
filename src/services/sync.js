@@ -23,7 +23,8 @@ const PROVIDERS = {
  *
  * @param {object} customer  row from `customers`
  * @param {object} [opts]
- * @param {string} [opts.startDate] YYYY-MM-DD (default = 1st of current month)
+ * @param {string} [opts.startDate] YYYY-MM-DD
+ *   (default: env SYNC_DEFAULT_DAYS days ago, otherwise 1st of current month)
  * @param {string} [opts.endDate]   YYYY-MM-DD (default = today)
  */
 async function syncCustomer(customer, opts = {}) {
@@ -32,7 +33,7 @@ async function syncCustomer(customer, opts = {}) {
   if (!driver) throw new Error(`unknown provider: ${customer.provider}`);
   if (!customer.api_key) throw new Error(`customer "${customer.name}" has no api_key`);
 
-  const startDate = opts.startDate || firstDayOfMonth();
+  const startDate = opts.startDate || defaultStartDate();
   const endDate   = opts.endDate   || today();
 
   let rows;
@@ -127,6 +128,21 @@ function today() {
 function firstDayOfMonth() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+}
+function daysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+/**
+ * Default sync start date.
+ * - If env SYNC_DEFAULT_DAYS is a positive integer, pull that many days back.
+ * - Otherwise fall back to the 1st day of the current month.
+ */
+function defaultStartDate() {
+  const n = parseInt(process.env.SYNC_DEFAULT_DAYS, 10);
+  if (Number.isFinite(n) && n > 0) return daysAgo(n);
+  return firstDayOfMonth();
 }
 
 module.exports = { syncCustomer, syncAll };
