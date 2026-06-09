@@ -70,8 +70,8 @@ const fmt = {
 };
 
 const PROVIDER_LABEL = {
-  source1: 'CCDN',
-  source2: 'YCDN',
+  source1: 'YCDN',
+  source2: 'CCDN',
 };
 
 // ============================================================
