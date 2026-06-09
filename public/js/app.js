@@ -70,8 +70,8 @@ const fmt = {
 };
 
 const PROVIDER_LABEL = {
-  source1: '来源一（BCDN）',
-  source2: '来源二（CDNetworks）',
+  source1: 'CCDN',
+  source2: 'YCDN',
 };
 
 // ============================================================
@@ -230,7 +230,7 @@ function renderOverviewPage(el) {
           <thead class="bg-slate-50 text-slate-600 text-xs uppercase tracking-wider">
             <tr>
               <th class="text-left px-6 py-3">客户</th>
-              <th class="text-left px-4 py-3">数据来源</th>
+              <th class="text-left px-4 py-3">融合平台</th>
               <th class="text-right px-4 py-3">单价（USDT/TB）</th>
               <th class="text-right px-4 py-3">本月流量（TB）</th>
               <th class="text-right px-4 py-3">本月营收（USDT）</th>
@@ -355,7 +355,7 @@ function renderProviderSummarySection() {
   return `
     <section class="mb-6">
       <div class="flex items-center justify-between mb-3">
-        <h2 class="text-base font-semibold text-slate-800">按数据来源汇总</h2>
+        <h2 class="text-base font-semibold text-slate-800">按融合平台汇总</h2>
         <button class="btn-link text-xs text-violet-700 hover:bg-violet-50" onclick="openProviderCostModal()">⚙️ 调整成本配置</button>
       </div>
       <div class="grid grid-cols-1 ${cols} gap-4">${cards}</div>
@@ -500,7 +500,7 @@ function renderDetailOverview(el) {
       <div class="bg-white border border-slate-200 rounded-xl p-4">
         <div class="section-title">客户信息</div>
         <dl class="text-sm space-y-2">
-          <div class="flex justify-between"><dt class="text-slate-500">数据来源</dt><dd>${fmt.esc(PROVIDER_LABEL[c.provider] || c.provider)}</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">融合平台</dt><dd>${fmt.esc(PROVIDER_LABEL[c.provider] || c.provider)}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">API 用户名</dt><dd class="font-mono text-xs">${fmt.esc(c.api_user || '（无）')}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">API 基础地址</dt><dd class="font-mono text-xs text-right break-all">${fmt.esc(c.api_base_url || '（默认）')}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">状态</dt><dd>${c.status === 'active' ? '启用' : '停用'}</dd></div>
@@ -943,7 +943,7 @@ async function openProviderCostModal() {
     return;
   }
   if (!rows || !rows.length) {
-    body.innerHTML = `<div class="text-center text-slate-500 py-10">暂无可配置的数据来源。</div>`;
+    body.innerHTML = `<div class="text-center text-slate-500 py-10">暂无可配置的融合平台。</div>`;
     return;
   }
 

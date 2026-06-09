@@ -42,7 +42,7 @@ const db = require('../db');
  *   - total_gross_profit
  *   - margin (gross_profit / revenue, null if revenue == 0)
  *
- * This is used by the "数据来源成本设置" modal so the operator can see
+ * This is used by the "融合平台成本设置" modal so the operator can see
  * how each provider's cost configuration affects real numbers.
  */
 function listProviderCosts(withStats = false) {
@@ -138,7 +138,7 @@ function buildCostMap() {
 
 /**
  * Aggregate metrics grouped by `customers.provider`, for the dashboard's
- * "按数据来源汇总" card.
+ * "按融合平台汇总" card.
  *
  * Returns:
  *   [{

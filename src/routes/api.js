@@ -408,7 +408,7 @@ router.get('/provider-costs', (req, res) => {
 });
 
 // Aggregated metrics grouped by provider (for the dashboard's
-// "按数据来源汇总" card). Honors ?month=YYYY-MM (default = current month).
+// "按融合平台汇总" card). Honors ?month=YYYY-MM (default = current month).
 router.get('/provider-summaries', (req, res) => {
   ok(res, stats.listProviderSummaries(req.query.month));
 });
