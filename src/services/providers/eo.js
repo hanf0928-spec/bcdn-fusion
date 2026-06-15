@@ -101,9 +101,13 @@ async function fetchDailyTraffic(cfg) {
 
   for (const [from, to] of chunks) {
     try {
-      // Fan out one request per metric in parallel, then sum by day.
-      const perMetric = await Promise.all(
-        TC_METRICS.map(metric => callOneWindow({
+      // Run one metric at a time. EO/Tencent Cloud's edge sometimes RSTs
+      // a connection when several signed POSTs hit it in the same TCP
+      // window, surfacing as `socket hang up`. Sequential calls + a
+      // small jitter between chunks are friendlier and just as fast for
+      // our 1~3 metric setup.
+      for (const metric of TC_METRICS) {
+        const dataPoints = await callOneWindowWithRetry({
           baseUrl,
           secretId:  cfg.apiUser,
           secretKey: cfg.apiKey,
@@ -111,9 +115,7 @@ async function fetchDailyTraffic(cfg) {
           endTime:   `${to}T23:59:59${TZ_OFFSET}`,
           zoneIds,
           metric,
-        }))
-      );
-      for (const dataPoints of perMetric) {
+        });
         for (const p of dataPoints) {
           const day = chinaDateOf(p.Time);
           if (!day) continue;
@@ -124,6 +126,8 @@ async function fetchDailyTraffic(cfg) {
     } catch (e) {
       errors.push(`[${from}~${to}] ${e.message}`);
     }
+    // tiny breather between chunks (skip after the last one)
+    await sleep(150);
   }
 
   if (okCount === 0 && errors.length) {
@@ -136,6 +140,31 @@ async function fetchDailyTraffic(cfg) {
       traffic_gb: round4(bytes / BYTES_PER_GB),
     }))
     .sort((a, b) => a.usage_date.localeCompare(b.usage_date));
+}
+
+/**
+ * Same as callOneWindow but with a single best-effort retry for transient
+ * network errors (socket hang up / ECONNRESET / timeout). Tencent Cloud's
+ * edge occasionally RSTs the first HTTPS POST after a quiet period; one
+ * retry with a short backoff almost always succeeds.
+ */
+async function callOneWindowWithRetry(args) {
+  const TRANSIENT_RE = /(socket hang up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|Request timeout|read ECONNRESET)/i;
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await callOneWindow(args);
+    } catch (e) {
+      lastErr = e;
+      if (!TRANSIENT_RE.test(String(e && e.message))) break;
+      await sleep(400 + attempt * 600);
+    }
+  }
+  throw lastErr;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /** Sign + send one DescribeBillingData call. Returns Response.Data array. */
@@ -293,9 +322,14 @@ function httpPostJSON(url, body, headers) {
       port: u.port || 443,
       path: (u.pathname && u.pathname !== '/' ? u.pathname : '/') + (u.search || ''),
       method: 'POST',
+      // Force a fresh TCP connection per request: Tencent Cloud's edge
+      // sometimes silently RSTs idle keep-alive sockets, which surfaces
+      // here as `socket hang up`. agent:false sidesteps that pool.
+      agent: false,
       headers: {
         ...headers,
         'Content-Length': Buffer.byteLength(body),
+        'Connection':     'close',
       },
     }, (res) => {
       let buf = '';
@@ -307,9 +341,11 @@ function httpPostJSON(url, body, headers) {
         try { resolve(JSON.parse(buf)); }
         catch (_) { reject(new Error(`Invalid JSON from upstream: ${buf.slice(0, 300)}`)); }
       });
+      res.on('error', reject);
     });
     req.on('error', reject);
-    req.setTimeout(30000, () => req.destroy(new Error('Request timeout')));
+    // Whole-request timeout. Keep it < syncCustomer's outer expectations.
+    req.setTimeout(20000, () => req.destroy(new Error('Request timeout')));
     req.write(body);
     req.end();
   });

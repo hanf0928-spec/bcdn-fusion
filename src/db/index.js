@@ -142,6 +142,19 @@ function init() {
   // EO requires a list of ZoneIds (or ["*"] for all zones under the
   // account). Stored as JSON-encoded array text. NULL/empty => default "*".
   ensureColumn('customers', 'zone_ids',     `TEXT`);
+  // Traffic calibration knobs applied at sync time:
+  //   adjusted = max(0, raw * (1 + traffic_adjust_pct/100) + traffic_adjust_delta_gb)
+  // Both are stored as REAL with default 0 (no adjustment).
+  //   - traffic_adjust_pct           : percentage offset, e.g.  5 means +5%, -3 means -3%
+  //   - traffic_adjust_delta_gb      : absolute offset in GB, applied ONCE per sync,
+  //                                    spread across days of `traffic_adjust_anchor_month`
+  //                                    proportional to each day's raw traffic.
+  //   - traffic_adjust_anchor_month  : YYYY-MM. The month whose days are used as the
+  //                                    weighting basis for delta. Empty/NULL =>
+  //                                    fall back to the month of the sync window's endDate.
+  ensureColumn('customers', 'traffic_adjust_pct',           `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('customers', 'traffic_adjust_delta_gb',      `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('customers', 'traffic_adjust_anchor_month',  `TEXT`);
 
   // Make sure every known provider has a cost row (zeros until configured).
   const seedProviderCost = db.prepare(`

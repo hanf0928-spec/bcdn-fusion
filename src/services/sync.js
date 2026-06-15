@@ -79,19 +79,78 @@ async function syncCustomer(customer, opts = {}) {
   `);
 
   let totalTraffic = 0;
+  // Per-customer traffic calibration.
+  //   pct           : per-row scaling, applied to every day independently.
+  //   delta_gb      : ONE-OFF absolute offset for the whole sync run,
+  //                   spread across the days of `anchor_month` proportional
+  //                   to each day's RAW traffic (heavy days carry more).
+  //   anchor_month  : 'YYYY-MM'. The basis used for delta weighting.
+  //                   When empty/null we fall back to the month of `endDate`.
+  // Final formula per row:
+  //   adjusted_i = max(0, raw_i * (1 + pct/100) + delta_share_i)
+  //   where Σ delta_share_i ≈ delta_gb, and delta_share_i = 0 for any
+  //   day NOT in anchor_month.
+  // If the sync window has no overlap with anchor_month (i.e. the driver
+  // returned no rows for that month), we skip delta entirely and surface
+  // the reason in sync_logs.message — never silently re-target the offset.
+  const adjPct      = Number(customer.traffic_adjust_pct      || 0);
+  const adjDelta    = Number(customer.traffic_adjust_delta_gb || 0);
+  const anchorMonth = (customer.traffic_adjust_anchor_month
+    && /^\d{4}-(0[1-9]|1[0-2])$/.test(String(customer.traffic_adjust_anchor_month)))
+    ? String(customer.traffic_adjust_anchor_month)
+    : String(endDate || '').slice(0, 7); // fallback: month of endDate
+
+  // Compute the anchor-month subset of the rows the driver returned.
+  // `c` mode: weights come from THIS sync's data, no DB pollution.
+  const anchorRows = anchorMonth
+    ? rows.filter(r => String(r.usage_date || '').slice(0, 7) === anchorMonth)
+    : [];
+  const anchorRawTotal = anchorRows.reduce((s, r) => s + Number(r.traffic_gb || 0), 0);
+  const anchorN = anchorRows.length;
+
+  // Decide whether delta can actually be applied.
+  let deltaSkipReason = null;
+  let deltaApplied = false;
+  if (Math.abs(adjDelta) > 1e-9) {
+    if (anchorN === 0) {
+      deltaSkipReason = `anchor month ${anchorMonth} not in sync window — delta skipped`;
+    } else {
+      deltaApplied = true;
+    }
+  }
+
+  const adjustEnabled = Math.abs(adjPct) > 1e-9 || deltaApplied;
+  const adjTag = (Math.abs(adjPct) > 1e-9 || Math.abs(adjDelta) > 1e-9)
+    ? `,adj=${adjPct >= 0 ? '+' : ''}${stats.round2(adjPct)}%${adjDelta >= 0 ? '+' : ''}${stats.round4(adjDelta)}GB(${deltaApplied ? `anchor=${anchorMonth}` : 'delta-skipped'})`
+    : '';
+
+  // Per-row delta share. Days outside anchor_month get 0; inside, weighted
+  // by raw traffic (or evenly when every anchor day is 0).
+  const deltaShare = (it) => {
+    if (!deltaApplied) return 0;
+    if (String(it.usage_date || '').slice(0, 7) !== anchorMonth) return 0;
+    const raw = Number(it.traffic_gb || 0);
+    if (anchorRawTotal > 1e-12) return adjDelta * (raw / anchorRawTotal);
+    return adjDelta / anchorN;   // anchor month exists but every day is 0 -> even split within the month
+  };
+
   const tx = db.transaction((items) => {
     for (const it of items) {
-      const traffic = Number(it.traffic_gb || 0);
-      const amount  = stats.round2(traffic * Number(customer.unit_price || 0));
+      const rawTraffic = Number(it.traffic_gb || 0);
+      const traffic = adjustEnabled
+        ? Math.max(0, rawTraffic * (1 + adjPct / 100) + deltaShare(it))
+        : rawTraffic;
+      const trafficR = stats.round4(traffic);
+      const amount  = stats.round2(trafficR * Number(customer.unit_price || 0));
       upsert.run(
         customer.id,
         it.usage_date,
-        traffic,
+        trafficR,
         Number(customer.unit_price || 0),
         amount,
-        `auto:${customer.provider}`,
+        `auto:${customer.provider}${adjTag}`,
       );
-      totalTraffic += traffic;
+      totalTraffic += trafficR;
     }
   });
   tx(rows);
@@ -99,7 +158,19 @@ async function syncCustomer(customer, opts = {}) {
   db.prepare(`UPDATE customers SET last_sync_at = datetime('now','localtime') WHERE id = ?`)
     .run(customer.id);
 
-  logSync(customer, true, rows.length, stats.round4(totalTraffic), `${startDate} ~ ${endDate}`);
+  const adjMsgParts = [];
+  if (Math.abs(adjPct) > 1e-9) {
+    adjMsgParts.push(`${adjPct >= 0 ? '+' : ''}${stats.round2(adjPct)}%`);
+  }
+  if (Math.abs(adjDelta) > 1e-9) {
+    adjMsgParts.push(deltaApplied
+      ? `${adjDelta >= 0 ? '+' : ''}${stats.round4(adjDelta)}GB once @anchor=${anchorMonth}`
+      : `${adjDelta >= 0 ? '+' : ''}${stats.round4(adjDelta)}GB SKIPPED (${deltaSkipReason})`);
+  }
+  const logMsg = adjMsgParts.length
+    ? `${startDate} ~ ${endDate} (adj ${adjMsgParts.join(' ')})`
+    : `${startDate} ~ ${endDate}`;
+  logSync(customer, true, rows.length, stats.round4(totalTraffic), logMsg);
 
   return {
     customer_id: customer.id,

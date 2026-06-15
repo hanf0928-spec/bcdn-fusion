@@ -15,6 +15,33 @@ function num(v, def = 0) {
   return Number.isFinite(n) ? n : def;
 }
 
+/** Clamp the calibration percentage to a sane range to avoid runaway numbers. */
+function clampPct(p) {
+  const n = Number(p);
+  if (!Number.isFinite(n)) return 0;
+  if (n < -100)  return -100;
+  if (n > 1000)  return 1000;
+  return n;
+}
+
+/**
+ * Normalise the anchor month input.
+ *   - undefined         : caller didn't touch the field    -> sentinel `undefined`
+ *   - null / '' / empty : explicitly cleared                -> null (use endDate's month at sync time)
+ *   - 'YYYY-MM'         : kept as-is
+ *   - anything else     : rejected (callers should send YYYY-MM)
+ */
+function normAnchorMonth(v) {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(s)) {
+    throw new Error('traffic_adjust_anchor_month must be YYYY-MM');
+  }
+  return s;
+}
+
 /** Mask an api_key for display: keep first 6 and last 4 characters. */
 function maskKey(k) {
   if (!k) return '';
@@ -105,15 +132,21 @@ router.post('/customers', (req, res) => {
     name, contact, remark,
     provider, api_key, api_user, api_base_url, zone_ids,
     unit_price, alert_threshold, tg_chat_id, status,
+    traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
   } = req.body || {};
   if (!name || !String(name).trim()) return fail(res, 400, 'name is required');
+
+  let anchorMonthIn;
+  try { anchorMonthIn = normAnchorMonth(traffic_adjust_anchor_month); }
+  catch (e) { return fail(res, 400, e.message); }
 
   try {
     const r = db.prepare(`
       INSERT INTO customers
         (name, contact, remark, provider, api_key, api_user, api_base_url, zone_ids,
-         unit_price, alert_threshold, tg_chat_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         unit_price, alert_threshold, tg_chat_id, status,
+         traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       String(name).trim(),
       contact || null,
@@ -127,6 +160,9 @@ router.post('/customers', (req, res) => {
       num(alert_threshold, 0),
       tg_chat_id || null,
       status || 'active',
+      clampPct(num(traffic_adjust_pct, 0)),
+      num(traffic_adjust_delta_gb, 0),
+      anchorMonthIn === undefined ? null : anchorMonthIn,
     );
     ok(res, { id: r.lastInsertRowid });
   } catch (e) {
@@ -145,7 +181,12 @@ router.put('/customers/:id', (req, res) => {
     name, contact, remark,
     provider, api_key, api_user, api_base_url, zone_ids,
     unit_price, alert_threshold, tg_chat_id, status,
+    traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
   } = req.body || {};
+
+  let anchorMonthIn;
+  try { anchorMonthIn = normAnchorMonth(traffic_adjust_anchor_month); }
+  catch (e) { return fail(res, 400, e.message); }
 
   // For api_key: if client sends `null`, clear; if undefined/empty string,
   // keep existing (so the masked-key UI can save without exposing the key).
@@ -161,6 +202,18 @@ router.put('/customers/:id', (req, res) => {
     ? c.zone_ids
     : normalizeZoneIdsForStorage(zone_ids);
 
+  // Calibration knobs: undefined keeps current; non-undefined coerces to a
+  // safe number (0 fallback, pct clamped to a sane range).
+  const nextAdjPct = (traffic_adjust_pct === undefined)
+    ? Number(c.traffic_adjust_pct || 0)
+    : clampPct(num(traffic_adjust_pct, 0));
+  const nextAdjDelta = (traffic_adjust_delta_gb === undefined)
+    ? Number(c.traffic_adjust_delta_gb || 0)
+    : num(traffic_adjust_delta_gb, 0);
+  const nextAnchorMonth = (anchorMonthIn === undefined)
+    ? (c.traffic_adjust_anchor_month || null)
+    : anchorMonthIn;
+
   db.prepare(`
     UPDATE customers SET
       name = ?,
@@ -175,6 +228,9 @@ router.put('/customers/:id', (req, res) => {
       alert_threshold = ?,
       tg_chat_id = ?,
       status = ?,
+      traffic_adjust_pct = ?,
+      traffic_adjust_delta_gb = ?,
+      traffic_adjust_anchor_month = ?,
       updated_at = datetime('now','localtime')
     WHERE id = ?
   `).run(
@@ -190,6 +246,9 @@ router.put('/customers/:id', (req, res) => {
     num(alert_threshold, c.alert_threshold),
     tg_chat_id ?? c.tg_chat_id,
     status || c.status,
+    nextAdjPct,
+    nextAdjDelta,
+    nextAnchorMonth,
     id,
   );
 

@@ -75,6 +75,28 @@ const PROVIDER_LABEL = {
   eo:      'EO',
 };
 
+/**
+ * Format a customer's traffic-calibration knobs for the detail page.
+ * Returns "未启用" when both knobs are 0; otherwise something like
+ * "+5.00% · +0.5000 TB".
+ */
+function renderAdjustSummary(c) {
+  const pct      = Number(c && c.traffic_adjust_pct      || 0);
+  const deltaGb  = Number(c && c.traffic_adjust_delta_gb || 0);
+  const anchor   = (c && c.traffic_adjust_anchor_month) || '';
+  if (Math.abs(pct) < 1e-9 && Math.abs(deltaGb) < 1e-9) {
+    return `<span class="text-slate-400">未启用</span>`;
+  }
+  const deltaTb = deltaGb / GB_PER_TB;
+  const pctStr   = (pct      >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+  const deltaStr = (deltaTb  >= 0 ? '+' : '') + deltaTb.toFixed(4) + ' TB';
+  const cls      = (pct + deltaGb) >= 0 ? 'text-emerald-700' : 'text-rose-700';
+  const anchorStr = (Math.abs(deltaGb) > 1e-9)
+    ? ` <span class="text-slate-400">@${anchor || '同步月'}</span>`
+    : '';
+  return `<span class="num ${cls}">${pctStr} · ${deltaStr}</span>${anchorStr}`;
+}
+
 // ============================================================
 // State
 // ============================================================
@@ -518,6 +540,7 @@ function renderDetailOverview(el) {
           <div class="flex justify-between"><dt class="text-slate-500">状态</dt><dd>${c.status === 'active' ? '启用' : '停用'}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">单价</dt><dd class="num">$ ${fmt.pricePerTB(c.unit_price)} USDT / TB</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">告警阈值</dt><dd class="num">$ ${fmt.money(c.alert_threshold)} USDT</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">流量校准</dt><dd class="text-right text-xs">${renderAdjustSummary(c)}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">TG chat_id</dt><dd class="font-mono text-xs">${fmt.esc(c.tg_chat_id || '（使用全局）')}</dd></div>
           <div class="pt-2 border-t border-slate-100"><dt class="text-slate-500 mb-1">备注</dt><dd class="text-slate-700 whitespace-pre-wrap">${fmt.esc(c.remark || '—')}</dd></div>
         </dl>
@@ -753,6 +776,18 @@ function openCustomerModal(id) {
         ? Number((Number(c.unit_price) * GB_PER_TB).toFixed(2))
         : 0;
       form.alert_threshold.value = c.alert_threshold ?? 0;
+      // Calibration: pct stored as-is; absolute delta stored in GB but
+      // displayed in TB to match the rest of the UI's units.
+      if (form.traffic_adjust_pct) {
+        form.traffic_adjust_pct.value = Number(c.traffic_adjust_pct || 0);
+      }
+      if (form.traffic_adjust_delta_tb) {
+        const deltaGb = Number(c.traffic_adjust_delta_gb || 0);
+        form.traffic_adjust_delta_tb.value = deltaGb / GB_PER_TB;
+      }
+      if (form.traffic_adjust_anchor_month) {
+        form.traffic_adjust_anchor_month.value = c.traffic_adjust_anchor_month || '';
+      }
       form.tg_chat_id.value   = c.tg_chat_id || '';
       form.remark.value       = c.remark || '';
       document.getElementById('api-key-hint').textContent = c.has_api_key
@@ -788,6 +823,11 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
 
   // Form's unit_price is in USDT/TB; backend stores USDT/GB.
   const unitPriceTB = parseFloat(f.unit_price.value || '0');
+  // Calibration: pct passes through as-is; UI delta is TB but backend
+  // stores GB to match the traffic_gb column.
+  const adjPctVal   = parseFloat((f.traffic_adjust_pct && f.traffic_adjust_pct.value) || '0');
+  const adjDeltaTb  = parseFloat((f.traffic_adjust_delta_tb && f.traffic_adjust_delta_tb.value) || '0');
+  const adjAnchorMonth = (f.traffic_adjust_anchor_month && f.traffic_adjust_anchor_month.value || '').trim();
   const payload = {
     name: f.name.value.trim(),
     contact: f.contact.value.trim() || null,
@@ -799,6 +839,9 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
     alert_threshold: parseFloat(f.alert_threshold.value || '0'),
     tg_chat_id: f.tg_chat_id.value.trim() || null,
     remark: f.remark.value.trim() || null,
+    traffic_adjust_pct:      Number.isFinite(adjPctVal)  ? adjPctVal  : 0,
+    traffic_adjust_delta_gb: Number.isFinite(adjDeltaTb) ? adjDeltaTb * GB_PER_TB : 0,
+    traffic_adjust_anchor_month: adjAnchorMonth || null,
   };
   // EO uses Zone IDs; only send for that provider so we don't accidentally
   // overwrite the field on other providers.

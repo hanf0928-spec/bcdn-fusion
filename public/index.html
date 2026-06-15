@@ -139,6 +139,40 @@
           </div>
         </div>
 
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-slate-600 mb-1">
+              流量校准 · 百分比（%）
+              <span class="text-slate-400 font-normal">（上浮/下浮，0 = 不调整）</span>
+            </label>
+            <input name="traffic_adjust_pct" type="number" step="0.01" min="-100" max="1000" value="0" placeholder="例如 5 = +5%；-3 = -3%" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-600 mb-1">
+              流量校准 · 绝对值（TB）
+              <span class="text-slate-400 font-normal">（整段同步只加 1 次，按基准月份各天流量占比分摊）</span>
+            </label>
+            <input name="traffic_adjust_delta_tb" type="number" step="0.0001" value="0" placeholder="例如 0.5 / -0.2" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-slate-600 mb-1">
+              绝对值校准 · 基准月份
+              <span class="text-slate-400 font-normal">（YYYY-MM；留空 = 同步窗口结束日所在月）</span>
+            </label>
+            <input name="traffic_adjust_anchor_month" type="month" placeholder="例如 2026-06" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+          </div>
+          <div></div>
+        </div>
+
+        <div class="text-xs text-slate-400 -mt-1">
+          公式：每天 = max(0, 原始流量 × (1 + 百分比/100) + 绝对值 × 当天在<strong>基准月份</strong>内的占比)。<br/>
+          百分比按行生效；绝对值<strong>每次同步只生效一次</strong>，仅分摊到<strong>基准月份</strong>内的各天（流量越大的天分得越多）；非基准月份的日期不分摊。<br/>
+          若同步窗口与基准月份无交集，则本次绝对值<strong>不生效</strong>（同步日志会标注 SKIPPED）。修改后对<strong>新同步</strong>生效；如需重算历史，请重新触发一次同步。
+        </div>
+
         <div>
           <label class="block text-xs font-medium text-slate-600 mb-1">Telegram chat_id（可选，留空使用全局配置）</label>
           <input name="tg_chat_id" placeholder="-1001234567890" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono" />

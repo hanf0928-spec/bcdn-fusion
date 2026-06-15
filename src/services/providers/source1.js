@@ -75,7 +75,7 @@ async function fetchDailyTraffic(cfg) {
 
   for (const [from, to] of chunks) {
     try {
-      const series = await callOneWindow({
+      const series = await callOneWindowWithRetry({
         baseUrl, apiKey: cfg.apiKey,
         startMs:  chinaDayStart(from),
         endMs:    chinaDayEnd(to),       // exclusive boundary (next day 00:00 +08)
@@ -91,6 +91,9 @@ async function fetchDailyTraffic(cfg) {
     } catch (e) {
       errors.push(`[${from}~${to}] ${e.message}`);
     }
+    // tiny breather between chunks: spreads load and avoids tripping
+    // upstream gateway rate-limits.
+    await sleep(150);
   }
 
   if (okCount === 0 && errors.length) {
@@ -103,6 +106,32 @@ async function fetchDailyTraffic(cfg) {
       traffic_gb: round4(raw * factor),
     }))
     .sort((a, b) => a.usage_date.localeCompare(b.usage_date));
+}
+
+/**
+ * Same as callOneWindow but with one best-effort retry for transient
+ * network errors. Upstream's nginx occasionally RSTs the first request
+ * after a quiet period (curl reports it as "Empty reply from server";
+ * Node reports "socket hang up"). One retry with a small backoff
+ * sidesteps it without masking real outages.
+ */
+async function callOneWindowWithRetry(args) {
+  const TRANSIENT_RE = /(socket hang up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|Empty reply|Request timeout|read ECONNRESET|EPIPE)/i;
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await callOneWindow(args);
+    } catch (e) {
+      lastErr = e;
+      if (!TRANSIENT_RE.test(String(e && e.message))) break;
+      await sleep(500 + attempt * 800);
+    }
+  }
+  throw lastErr;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /** Call domain-statistics for a single window. Returns [{ tsMs, flux }, ...]. */
