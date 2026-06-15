@@ -157,7 +157,9 @@ function buildCostMap() {
  * Sorted by provider asc.
  */
 function listProviderSummaries(month) {
-  const m = month || nowYearMonth();
+  // "all" / 'all' / null  =>  use lifetime aggregates as the "current period".
+  const isAll = month === 'all' || month === 'ALL';
+  const m = isAll ? null : (month || nowYearMonth());
   const cm = buildCostMap();
 
   // Customers per provider (count, even if 0 usage).
@@ -177,16 +179,18 @@ function listProviderSummaries(month) {
   `).all();
   const lifeMap = new Map(lifeRows.map(r => [r.provider, r]));
 
-  // Current-month aggregates.
-  const monthRows = db.prepare(`
-    SELECT c.provider                      AS provider,
-           COALESCE(SUM(u.traffic_gb), 0)  AS traffic_gb,
-           COALESCE(SUM(u.amount),     0)  AS revenue
-    FROM customers c
-    LEFT JOIN usage_records u
-      ON u.customer_id = c.id AND substr(u.usage_date,1,7) = ?
-    GROUP BY c.provider
-  `).all(m);
+  // "Current period" aggregates: month-scoped, or lifetime when isAll.
+  const monthRows = isAll
+    ? lifeRows
+    : db.prepare(`
+        SELECT c.provider                      AS provider,
+               COALESCE(SUM(u.traffic_gb), 0)  AS traffic_gb,
+               COALESCE(SUM(u.amount),     0)  AS revenue
+        FROM customers c
+        LEFT JOIN usage_records u
+          ON u.customer_id = c.id AND substr(u.usage_date,1,7) = ?
+        GROUP BY c.provider
+      `).all(m);
   const monthMap = new Map(monthRows.map(r => [r.provider, r]));
 
   // Build the union of providers from configured costs + customers.
@@ -218,8 +222,8 @@ function listProviderSummaries(month) {
       // configuration
       platform_cost_price:  cost.platform,
       resource_cost_price:  cost.resource,
-      // current month
-      month: m,
+      // current period: month or 'all'
+      month: isAll ? 'all' : m,
       month_traffic_gb:     round4(mTraffic),
       month_revenue:        round2(mRevenue),
       month_platform_cost:  round2(mPlatform),
@@ -334,7 +338,9 @@ function getCustomerMonthlyUsage(customerId, month, costMap) {
  * For dashboard list: every customer + current-month and lifetime metrics.
  */
 function listCustomersWithStats(month) {
-  const m = month || nowYearMonth();
+  // "all" / 'all' / null  =>  use lifetime numbers as the "current period".
+  const isAll = month === 'all' || month === 'ALL';
+  const m = isAll ? null : (month || nowYearMonth());
   const customers = db.prepare(`SELECT * FROM customers ORDER BY id ASC`).all();
   const cm = buildCostMap();
 
@@ -348,17 +354,27 @@ function listCustomersWithStats(month) {
   return customers.map(c => {
     const s = getCustomerStats(c.id, cm);
     const cost = cm.get(c.provider) || { platform: 0, resource: 0 };
-    const mr = monthRow.get(c.id, m);
 
-    const monthTraffic = Number(mr.traffic_gb || 0);
-    const monthRevenue = round2(mr.amount);
-    const monthResource = round2(monthTraffic * cost.resource);
-    const monthPlatform = round2(monthRevenue * cost.platform);
-    const monthProfit   = round2(monthRevenue - monthPlatform - monthResource);
+    let monthTraffic, monthRevenue, monthResource, monthPlatform, monthProfit;
+    if (isAll) {
+      // "全区间" mode — current-period numbers are simply the lifetime ones.
+      monthTraffic  = s.totalTraffic;
+      monthRevenue  = s.totalRevenue;
+      monthResource = s.totalResourceCost;
+      monthPlatform = s.totalPlatformCost;
+      monthProfit   = s.totalGrossProfit;
+    } else {
+      const mr = monthRow.get(c.id, m);
+      monthTraffic  = Number(mr.traffic_gb || 0);
+      monthRevenue  = round2(mr.amount);
+      monthResource = round2(monthTraffic * cost.resource);
+      monthPlatform = round2(monthRevenue * cost.platform);
+      monthProfit   = round2(monthRevenue - monthPlatform - monthResource);
+    }
 
     return {
       ...c,
-      current_month:        m,
+      current_month:        isAll ? 'all' : m,
       month_traffic_gb:     round4(monthTraffic),
       month_amount:         monthRevenue,
       month_revenue:        monthRevenue,

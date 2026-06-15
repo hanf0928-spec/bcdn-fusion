@@ -12,11 +12,27 @@ const db = require('../db');
 const stats = require('./stats');
 const source1 = require('./providers/source1');
 const source2 = require('./providers/source2');
+const eo      = require('./providers/eo');
 
 const PROVIDERS = {
   source1,
   source2,
+  eo,
 };
+
+/** Best-effort parse of `customers.zone_ids` (TEXT, JSON-encoded array). */
+function parseZoneIds(raw) {
+  if (!raw) return undefined;
+  if (Array.isArray(raw)) return raw;
+  try {
+    const v = JSON.parse(raw);
+    if (Array.isArray(v)) return v.filter(Boolean).map(String);
+  } catch (_) {
+    // tolerate plain comma/space separated strings stored historically.
+    return String(raw).split(/[,\s]+/).filter(Boolean);
+  }
+  return undefined;
+}
 
 /**
  * Sync one customer.
@@ -42,6 +58,7 @@ async function syncCustomer(customer, opts = {}) {
       apiKey:   customer.api_key,
       apiUser:  customer.api_user || undefined,
       baseUrl:  customer.api_base_url || undefined,
+      zoneIds:  parseZoneIds(customer.zone_ids),
       startDate,
       endDate,
     });

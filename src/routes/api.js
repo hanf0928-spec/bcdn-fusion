@@ -29,7 +29,36 @@ function shapeCustomer(c) {
   out.api_key_masked = maskKey(c.api_key);
   out.has_api_key = !!c.api_key;
   delete out.api_key;
+  // Surface zone_ids as a clean array for the UI; keep null when unset.
+  out.zone_ids = parseZoneIdsField(c.zone_ids);
   return out;
+}
+
+/**
+ * Normalise a zone_ids input (string CSV / array / null) to either
+ *   - a JSON-encoded array string (for storage), or
+ *   - null when empty / not provided.
+ */
+function normalizeZoneIdsForStorage(input) {
+  if (input == null) return null;
+  let arr;
+  if (Array.isArray(input)) arr = input;
+  else arr = String(input).split(/[,\s]+/);
+  arr = arr.map(s => String(s || '').trim()).filter(Boolean);
+  if (!arr.length) return null;
+  return JSON.stringify(arr);
+}
+
+/** Inverse of normalizeZoneIdsForStorage: storage → UI-friendly array. */
+function parseZoneIdsField(raw) {
+  if (!raw) return null;
+  if (Array.isArray(raw)) return raw;
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v : null;
+  } catch (_) {
+    return String(raw).split(/[,\s]+/).filter(Boolean);
+  }
 }
 
 // =====================================================
@@ -74,7 +103,7 @@ router.get('/customers/:id', (req, res) => {
 router.post('/customers', (req, res) => {
   const {
     name, contact, remark,
-    provider, api_key, api_user, api_base_url,
+    provider, api_key, api_user, api_base_url, zone_ids,
     unit_price, alert_threshold, tg_chat_id, status,
   } = req.body || {};
   if (!name || !String(name).trim()) return fail(res, 400, 'name is required');
@@ -82,9 +111,9 @@ router.post('/customers', (req, res) => {
   try {
     const r = db.prepare(`
       INSERT INTO customers
-        (name, contact, remark, provider, api_key, api_user, api_base_url,
+        (name, contact, remark, provider, api_key, api_user, api_base_url, zone_ids,
          unit_price, alert_threshold, tg_chat_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       String(name).trim(),
       contact || null,
@@ -93,6 +122,7 @@ router.post('/customers', (req, res) => {
       api_key || null,
       api_user || null,
       api_base_url || null,
+      normalizeZoneIdsForStorage(zone_ids),
       num(unit_price, 0),
       num(alert_threshold, 0),
       tg_chat_id || null,
@@ -113,7 +143,7 @@ router.put('/customers/:id', (req, res) => {
 
   const {
     name, contact, remark,
-    provider, api_key, api_user, api_base_url,
+    provider, api_key, api_user, api_base_url, zone_ids,
     unit_price, alert_threshold, tg_chat_id, status,
   } = req.body || {};
 
@@ -126,6 +156,11 @@ router.put('/customers/:id', (req, res) => {
   // api_user is not sensitive — empty string clears, undefined keeps.
   const nextApiUser = (api_user === undefined) ? c.api_user : (api_user || null);
 
+  // zone_ids: undefined keeps current; empty/null/[] clears; else normalise.
+  const nextZoneIds = (zone_ids === undefined)
+    ? c.zone_ids
+    : normalizeZoneIdsForStorage(zone_ids);
+
   db.prepare(`
     UPDATE customers SET
       name = ?,
@@ -135,6 +170,7 @@ router.put('/customers/:id', (req, res) => {
       api_key = ?,
       api_user = ?,
       api_base_url = ?,
+      zone_ids = ?,
       unit_price = ?,
       alert_threshold = ?,
       tg_chat_id = ?,
@@ -149,6 +185,7 @@ router.put('/customers/:id', (req, res) => {
     nextApiKey,
     nextApiUser,
     (api_base_url === undefined) ? c.api_base_url : (api_base_url || null),
+    nextZoneIds,
     num(unit_price, c.unit_price),
     num(alert_threshold, c.alert_threshold),
     tg_chat_id ?? c.tg_chat_id,
@@ -279,13 +316,16 @@ router.delete('/recharges/:rid', (req, res) => {
 // Usage records
 // =====================================================
 
-// List usage of a customer (optionally filter by month YYYY-MM)
+// List usage of a customer (optionally filter by month YYYY-MM, or 'all')
 router.get('/customers/:id/usage', (req, res) => {
   const id = num(req.params.id);
   const month = req.query.month;
   let sql = `SELECT * FROM usage_records WHERE customer_id = ?`;
   const params = [id];
-  if (month) { sql += ` AND substr(usage_date,1,7) = ?`; params.push(month); }
+  if (month && month !== 'all' && month !== 'ALL') {
+    sql += ` AND substr(usage_date,1,7) = ?`;
+    params.push(month);
+  }
   sql += ` ORDER BY usage_date DESC`;
   ok(res, db.prepare(sql).all(...params));
 });

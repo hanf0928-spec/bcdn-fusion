@@ -72,6 +72,7 @@ const fmt = {
 const PROVIDER_LABEL = {
   source1: 'YCDN',
   source2: 'CCDN',
+  eo:      'EO',
 };
 
 // ============================================================
@@ -79,6 +80,7 @@ const PROVIDER_LABEL = {
 // ============================================================
 const state = {
   month: fmt.monthNow(),
+  range: 'month', // 'month' | 'all'
   customers: [],
   providerSummaries: [],
   view: { type: 'overview' }, // {type:'overview'} | {type:'customer', id}
@@ -87,17 +89,27 @@ const state = {
   chart: null,
 };
 
+// Build the ?month=... query value used by every list endpoint.
+// In 'all' mode we send `month=all`, which the backend treats as lifetime.
+function periodQuery() {
+  return state.range === 'all' ? 'all' : state.month;
+}
+// Display label for the current period (used in overview cards).
+function periodLabel() {
+  return state.range === 'all' ? '全区间' : state.month;
+}
+
 // ============================================================
 // Boot / data loading
 // ============================================================
 async function loadCustomers() {
-  state.customers = await API.get(`/api/customers?month=${state.month}`);
+  state.customers = await API.get(`/api/customers?month=${periodQuery()}`);
   renderTopTabs();
 }
 
 async function loadProviderSummaries() {
   try {
-    state.providerSummaries = await API.get(`/api/provider-summaries?month=${state.month}`);
+    state.providerSummaries = await API.get(`/api/provider-summaries?month=${periodQuery()}`);
   } catch (e) {
     state.providerSummaries = [];
   }
@@ -182,19 +194,19 @@ function renderOverviewPage(el) {
         <div class="stat-foot">${lowBalance > 0 ? `<span class="text-rose-600 font-medium">${lowBalance} 个低于阈值</span>` : '余额均充足'}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">${state.month} 流量</div>
+        <div class="stat-label">${periodLabel()} 流量</div>
         <div class="stat-value num">${fmt.traffic(monthTraffic)} <span class="text-base text-slate-400">TB</span></div>
-        <div class="stat-foot">本月营收 $ ${fmt.money(monthRevenue)} USDT</div>
+        <div class="stat-foot">${state.range === 'all' ? '累计营收' : '本月营收'} $ ${fmt.money(monthRevenue)} USDT</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">${state.month} 成本</div>
+        <div class="stat-label">${periodLabel()} 成本</div>
         <div class="stat-value num">$ ${fmt.money(monthPlatform + monthResource)} <span class="text-base text-slate-400">USDT</span></div>
         <div class="stat-foot">平台 $${fmt.money(monthPlatform)} · 资源 $${fmt.money(monthResource)}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">${state.month} 毛利</div>
+        <div class="stat-label">${periodLabel()} 毛利</div>
         <div class="stat-value num ${profitClass}">$ ${fmt.money(monthProfit)} <span class="text-base text-slate-400">USDT</span></div>
-        <div class="stat-foot">${monthRevenue > 0 ? `毛利率 ${(monthProfit / monthRevenue * 100).toFixed(1)}%` : '本月未产生营收'}</div>
+        <div class="stat-foot">${monthRevenue > 0 ? `毛利率 ${(monthProfit / monthRevenue * 100).toFixed(1)}%` : (state.range === 'all' ? '暂未产生营收' : '本月未产生营收')}</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">总余额</div>
@@ -223,7 +235,7 @@ function renderOverviewPage(el) {
     <section class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
       <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
         <h2 class="text-base font-semibold">客户列表</h2>
-        <div class="text-xs text-slate-500">共 ${totalCustomers} 个客户 · 财务口径以当前月为准</div>
+        <div class="text-xs text-slate-500">共 ${totalCustomers} 个客户 · 财务口径以${state.range === 'all' ? '全区间' : '当前月'}为准</div>
       </div>
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
@@ -232,11 +244,11 @@ function renderOverviewPage(el) {
               <th class="text-left px-6 py-3">客户</th>
               <th class="text-left px-4 py-3">融合平台</th>
               <th class="text-right px-4 py-3">单价（USDT/TB）</th>
-              <th class="text-right px-4 py-3">本月流量（TB）</th>
-              <th class="text-right px-4 py-3">本月营收（USDT）</th>
+              <th class="text-right px-4 py-3">${state.range === 'all' ? '累计' : '本月'}流量（TB）</th>
+              <th class="text-right px-4 py-3">${state.range === 'all' ? '累计' : '本月'}营收（USDT）</th>
               <th class="text-right px-4 py-3">平台成本</th>
               <th class="text-right px-4 py-3">资源成本</th>
-              <th class="text-right px-4 py-3">本月毛利</th>
+              <th class="text-right px-4 py-3">${state.range === 'all' ? '累计' : '本月'}毛利</th>
               <th class="text-right px-4 py-3">余额</th>
               <th class="text-center px-4 py-3">告警阈值</th>
               <th class="text-right px-4 py-3">操作</th>
@@ -326,7 +338,7 @@ function renderProviderSummarySection() {
 
         <div class="grid grid-cols-2 gap-3 text-xs">
           <div class="bg-slate-50 rounded-lg p-3">
-            <div class="text-slate-500 mb-1">本月（${fmt.esc(state.month)}）</div>
+            <div class="text-slate-500 mb-1">${state.range === 'all' ? '全区间' : `本月（${fmt.esc(state.month)}）`}</div>
             <div class="flex items-baseline justify-between"><span class="text-slate-500">流量</span><span class="num text-slate-800">${fmt.traffic(p.month_traffic_gb)} TB</span></div>
             <div class="flex items-baseline justify-between"><span class="text-slate-500">营收</span><span class="num text-slate-800">$ ${fmt.money(monthRev)}</span></div>
             <div class="flex items-baseline justify-between"><span class="text-slate-500">成本</span><span class="num text-slate-500">$ ${fmt.money(monthCost)}</span></div>
@@ -372,7 +384,7 @@ async function renderCustomerPage(el, id) {
     [c, recharges, usage, alerts] = await Promise.all([
       API.get(`/api/customers/${id}`),
       API.get(`/api/customers/${id}/recharges`),
-      API.get(`/api/customers/${id}/usage?month=${state.month}`),
+      API.get(`/api/customers/${id}/usage?month=${periodQuery()}`),
       API.get(`/api/alerts/logs?customer_id=${id}`),
     ]);
   } catch (e) {
@@ -585,7 +597,7 @@ function renderUsage(el) {
         <input name="remark" class="px-3 py-2 border border-slate-300 rounded-lg text-sm w-full" /></div>
       <button class="px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-700">+ 新增 / 更新</button>
     </form>
-    <div class="text-xs text-slate-500 mb-2">当前查看 <b>${fmt.esc(state.month)}</b> 的用量记录，可在顶部切换月份。</div>
+    <div class="text-xs text-slate-500 mb-2">当前查看 <b>${state.range === 'all' ? '全区间' : fmt.esc(state.month)}</b> 的用量记录，可在顶部切换月份。</div>
     <table class="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
       <thead class="bg-slate-50 text-xs text-slate-500 uppercase">
         <tr><th class="text-left px-4 py-2">日期</th>
@@ -604,7 +616,7 @@ function renderUsage(el) {
             <td class="px-4 py-2 text-right num">$ ${fmt.money(r.amount)}</td>
             <td class="px-4 py-2 text-slate-600 text-xs">${fmt.esc(r.remark || '—')}</td>
             <td class="px-4 py-2 text-right"><button class="btn-link btn-danger" onclick="delUsage(${r.id})">删除</button></td>
-          </tr>`).join('') || `<tr><td colspan="6" class="text-center text-slate-400 py-6">${fmt.esc(state.month)} 暂无用量记录，可点击「立即同步」获取。</td></tr>`}
+          </tr>`).join('') || `<tr><td colspan="6" class="text-center text-slate-400 py-6">${state.range === 'all' ? '全区间' : fmt.esc(state.month)} 暂无用量记录，可点击「立即同步」获取。</td></tr>`}
       </tbody>
     </table>
   `;
@@ -721,6 +733,7 @@ function openCustomerModal(id) {
   form.id.value = '';
   document.getElementById('customer-modal-title').textContent = id ? '编辑客户' : '新建客户';
   document.getElementById('api-key-hint').textContent = '';
+  syncProviderFieldsVisibility();
 
   if (id) {
     API.get(`/api/customers/${id}`).then(c => {
@@ -731,6 +744,10 @@ function openCustomerModal(id) {
       form.provider.value     = c.provider || 'source1';
       form.api_user.value     = c.api_user || '';
       form.api_base_url.value = c.api_base_url || '';
+      // zone_ids comes back as an array (or null) from the API.
+      if (form.zone_ids) {
+        form.zone_ids.value = Array.isArray(c.zone_ids) ? c.zone_ids.join(', ') : '';
+      }
       // Backend stores USDT/GB; the form input asks for USDT/TB.
       form.unit_price.value   = c.unit_price != null
         ? Number((Number(c.unit_price) * GB_PER_TB).toFixed(2))
@@ -741,10 +758,27 @@ function openCustomerModal(id) {
       document.getElementById('api-key-hint').textContent = c.has_api_key
         ? `当前密钥：${c.api_key_masked}`
         : '尚未设置 API 密钥。';
+      syncProviderFieldsVisibility();
     }).catch(e => UI.toast(e.message, 'error'));
   }
   UI.openModal('modal-customer');
 }
+
+/**
+ * Show/hide provider-specific fields (currently: EO Zone IDs row).
+ * Called whenever the provider <select> value changes or modal opens.
+ */
+function syncProviderFieldsVisibility() {
+  const form = document.getElementById('form-customer');
+  if (!form) return;
+  const isEO = form.provider && form.provider.value === 'eo';
+  const row  = document.getElementById('row-zone-ids');
+  if (row) row.classList.toggle('hidden', !isEO);
+}
+
+// Toggle provider-specific fields whenever the operator switches providers.
+document.querySelector('#form-customer [name=provider]')
+  .addEventListener('change', syncProviderFieldsVisibility);
 
 document.getElementById('form-customer').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -766,6 +800,12 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
     tg_chat_id: f.tg_chat_id.value.trim() || null,
     remark: f.remark.value.trim() || null,
   };
+  // EO uses Zone IDs; only send for that provider so we don't accidentally
+  // overwrite the field on other providers.
+  if (f.provider.value === 'eo') {
+    const raw = (f.zone_ids && f.zone_ids.value || '').trim();
+    payload.zone_ids = raw ? raw.split(/[,\s]+/).filter(Boolean) : [];
+  }
   // For update, only send api_key if user typed a new value
   if (!editing || apiKeyVal) payload.api_key = apiKeyVal || null;
 
@@ -1043,8 +1083,38 @@ const monthPicker = document.getElementById('month-picker');
 monthPicker.value = state.month;
 monthPicker.addEventListener('change', () => {
   state.month = monthPicker.value || fmt.monthNow();
+  // Picking a month implicitly leaves "全区间" mode.
+  if (state.range !== 'month') {
+    state.range = 'month';
+    syncRangeButton();
+  }
   reloadAndRender();
 });
+
+// ---- range toggle (按月份 ↔ 全区间) ----
+const rangeBtn = document.getElementById('btn-range-all');
+function syncRangeButton() {
+  const isAll = state.range === 'all';
+  rangeBtn.textContent = isAll ? '📅 按月份' : '📅 全区间';
+  rangeBtn.title = isAll
+    ? '当前：全区间 — 点击切回按月份'
+    : '当前：按月份 — 点击查看全区间';
+  rangeBtn.classList.toggle('bg-indigo-600', isAll);
+  rangeBtn.classList.toggle('text-white',    isAll);
+  rangeBtn.classList.toggle('hover:bg-indigo-700', isAll);
+  rangeBtn.classList.toggle('bg-slate-100',  !isAll);
+  rangeBtn.classList.toggle('text-slate-700', !isAll);
+  rangeBtn.classList.toggle('hover:bg-slate-200', !isAll);
+  monthPicker.disabled = isAll;
+  monthPicker.classList.toggle('opacity-50', isAll);
+  monthPicker.classList.toggle('cursor-not-allowed', isAll);
+}
+rangeBtn.addEventListener('click', () => {
+  state.range = state.range === 'all' ? 'month' : 'all';
+  syncRangeButton();
+  reloadAndRender();
+});
+syncRangeButton();
 
 // Boot
 reloadAndRender();

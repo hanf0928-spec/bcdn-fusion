@@ -139,13 +139,16 @@ function init() {
   ensureColumn('customers', 'api_user',     `TEXT`);
   ensureColumn('customers', 'api_base_url', `TEXT`);
   ensureColumn('customers', 'last_sync_at', `TEXT`);
+  // EO requires a list of ZoneIds (or ["*"] for all zones under the
+  // account). Stored as JSON-encoded array text. NULL/empty => default "*".
+  ensureColumn('customers', 'zone_ids',     `TEXT`);
 
   // Make sure every known provider has a cost row (zeros until configured).
   const seedProviderCost = db.prepare(`
     INSERT OR IGNORE INTO provider_costs (provider, platform_cost_price, resource_cost_price)
     VALUES (?, 0, 0)
   `);
-  for (const p of ['source1', 'source2']) seedProviderCost.run(p);
+  for (const p of ['source1', 'source2', 'eo']) seedProviderCost.run(p);
 }
 
 function ensureColumn(table, column, def) {
