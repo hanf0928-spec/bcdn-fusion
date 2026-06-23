@@ -32,6 +32,9 @@
         <button id="btn-provider-costs" class="px-3 py-2 text-sm rounded-lg bg-violet-100 text-violet-800 hover:bg-violet-200 transition">
           🧾 成本设置
         </button>
+        <button id="btn-revenue-report" class="px-3 py-2 text-sm rounded-lg bg-emerald-100 text-emerald-800 hover:bg-emerald-200 transition">
+          📄 营收报表
+        </button>
         <button id="btn-check-alert" class="px-3 py-2 text-sm rounded-lg bg-amber-100 text-amber-800 hover:bg-amber-200 transition">
           ⚡️ 检查告警
         </button>
@@ -244,6 +247,35 @@
       </div>
       <div id="provider-costs-body" class="px-6 py-5 max-h-[80vh] overflow-y-auto">
         <div class="text-center text-slate-400 py-10">加载中…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== Revenue report modal (preview + print to PDF) ========== -->
+  <div id="modal-revenue-report" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto" data-print-root>
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-5xl overflow-hidden my-6">
+      <!-- Toolbar (hidden during print) -->
+      <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between no-print">
+        <div>
+          <h3 class="text-base font-semibold">营收报表预览</h3>
+          <p class="text-xs text-slate-500 mt-0.5">选择期间后预览效果，可直接导出为 PDF（浏览器另存为 / 打印目标选 PDF）。</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-slate-500">范围</label>
+          <select id="report-range" class="px-2 py-1.5 border border-slate-300 rounded-lg text-sm bg-white">
+            <option value="month">按月份</option>
+            <option value="all">全区间</option>
+          </select>
+          <input id="report-month" type="month" class="px-2 py-1.5 border border-slate-300 rounded-lg text-sm bg-white" />
+          <button id="btn-report-refresh" class="px-3 py-1.5 text-sm rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200">🔄 刷新</button>
+          <button id="btn-report-print" class="px-4 py-1.5 text-sm rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">📄 导出 PDF</button>
+          <button class="text-slate-400 hover:text-slate-600 ml-2" onclick="UI.closeModal('modal-revenue-report')">✕</button>
+        </div>
+      </div>
+
+      <!-- Report body (this is what gets printed) -->
+      <div id="report-body" class="px-8 py-6 max-h-[80vh] overflow-y-auto print-area">
+        <div class="text-center text-slate-400 py-20">加载中…</div>
       </div>
     </div>
   </div>

@@ -1005,6 +1005,7 @@ document.getElementById('btn-sync-all').addEventListener('click', async () => {
 });
 
 document.getElementById('btn-provider-costs').addEventListener('click', () => openProviderCostModal());
+document.getElementById('btn-revenue-report').addEventListener('click', () => openRevenueReport());
 
 // ============================================================
 // Provider-cost modal
@@ -1159,6 +1160,213 @@ rangeBtn.addEventListener('click', () => {
 });
 syncRangeButton();
 
+// ============================================================
+// Revenue report (preview + export to PDF via print)
+// ============================================================
+const reportState = {
+  range: 'month',          // 'month' | 'all'
+  month: fmt.monthNow(),   // YYYY-MM
+  data:  null,
+};
+
+function openRevenueReport() {
+  // Initialise the toolbar with the dashboard's current period so the
+  // preview is immediately familiar.
+  reportState.range = state.range;
+  reportState.month = state.month;
+  const sel  = document.getElementById('report-range');
+  const inp  = document.getElementById('report-month');
+  sel.value  = reportState.range;
+  inp.value  = reportState.month;
+  inp.disabled = (reportState.range === 'all');
+  inp.classList.toggle('opacity-50', reportState.range === 'all');
+  UI.openModal('modal-revenue-report');
+  loadRevenueReport();
+}
+
+async function loadRevenueReport() {
+  const body = document.getElementById('report-body');
+  body.innerHTML = `<div class="text-center text-slate-400 py-20">加载中…</div>`;
+  const period = reportState.range === 'all' ? 'all' : reportState.month;
+  try {
+    reportState.data = await API.get(`/api/reports/revenue?month=${encodeURIComponent(period)}`);
+    renderRevenueReport();
+  } catch (e) {
+    body.innerHTML = `<div class="text-center text-rose-600 py-20">加载失败：${fmt.esc(e.message)}</div>`;
+  }
+}
+
+function renderRevenueReport() {
+  const d = reportState.data;
+  if (!d) return;
+  const body = document.getElementById('report-body');
+  const t = d.totals || {};
+  const periodTxt = d.label || d.period;
+  const generated = (() => {
+    try { return new Date(d.generated_at).toLocaleString('zh-CN', { hour12: false }); }
+    catch (_) { return d.generated_at; }
+  })();
+
+  const profitClass = Number(t.gross_profit || 0) >= 0 ? 'pos' : 'neg';
+  const marginTxt = t.margin != null ? (Number(t.margin) * 100).toFixed(1) + '%' : '—';
+  const totalCost = Number(t.total_cost ?? (Number(t.platform_cost || 0) + Number(t.resource_cost || 0)));
+
+  // Provider section
+  const providers = d.providers || [];
+  const providerRows = providers.length
+    ? providers.map(p => {
+        const label = PROVIDER_LABEL[p.provider] || p.provider;
+        const cost  = Number(p.month_platform_cost || 0) + Number(p.month_resource_cost || 0);
+        const prof  = Number(p.month_gross_profit || 0);
+        const marg  = p.month_margin != null ? (Number(p.month_margin) * 100).toFixed(1) + '%' : '—';
+        const cls   = prof >= 0 ? 'pos' : 'neg';
+        return `
+          <tr>
+            <td>${fmt.esc(label)} <span class="text-slate-400 text-[10px]">(${fmt.esc(p.provider)})</span></td>
+            <td class="num">${p.customer_count}</td>
+            <td class="num">${fmt.traffic(p.month_traffic_gb)}</td>
+            <td class="num">$ ${fmt.money(p.month_revenue)}</td>
+            <td class="num">$ ${fmt.money(p.month_platform_cost)}</td>
+            <td class="num">$ ${fmt.money(p.month_resource_cost)}</td>
+            <td class="num">$ ${fmt.money(cost)}</td>
+            <td class="num ${cls}">$ ${fmt.money(prof)}</td>
+            <td class="num">${marg}</td>
+          </tr>`;
+      }).join('')
+    : `<tr><td colspan="9" class="text-center text-slate-400 py-4">暂无平台数据</td></tr>`;
+
+  // Customer section
+  const customers = d.customers || [];
+  const customerRows = customers.length
+    ? customers.map(c => {
+        const prof = Number(c.month_gross_profit || 0);
+        const rev  = Number(c.month_revenue || 0);
+        const marg = rev > 0 ? (prof / rev * 100).toFixed(1) + '%' : '—';
+        const cls  = prof >= 0 ? 'pos' : 'neg';
+        return `
+          <tr>
+            <td>${fmt.esc(c.name)}</td>
+            <td>${fmt.esc(PROVIDER_LABEL[c.provider] || c.provider || '—')}</td>
+            <td class="num">${fmt.pricePerTB(c.unit_price)}</td>
+            <td class="num">${fmt.traffic(c.month_traffic_gb)}</td>
+            <td class="num">$ ${fmt.money(c.month_revenue)}</td>
+            <td class="num">$ ${fmt.money(Number(c.month_platform_cost || 0) + Number(c.month_resource_cost || 0))}</td>
+            <td class="num ${cls}">$ ${fmt.money(prof)}</td>
+            <td class="num">${marg}</td>
+            <td class="num">$ ${fmt.money(c.balance)}</td>
+          </tr>`;
+      }).join('')
+    : `<tr><td colspan="9" class="text-center text-slate-400 py-4">暂无客户数据</td></tr>`;
+
+  body.innerHTML = `
+    <article class="report-doc">
+      <header class="flex items-start justify-between mb-4">
+        <div>
+          <h1>📡 BCDN 融合控制台 · 营收报表</h1>
+          <div class="meta mt-1">
+            报表期间：<strong>${fmt.esc(periodTxt)}</strong>
+            &nbsp;·&nbsp; 生成时间：${fmt.esc(generated)}
+            &nbsp;·&nbsp; 客户数：${t.customers || 0}
+          </div>
+        </div>
+        <div class="text-right text-[11px] text-slate-400">
+          单位：流量 TB · 金额 USDT<br/>
+          计费口径：营收 = Σ(流量 × 单价)
+        </div>
+      </header>
+
+      <section>
+        <h2>整体概览</h2>
+        <div class="kpi-grid">
+          <div class="kpi"><div class="l">总流量</div><div class="v">${fmt.traffic(t.traffic_gb)} TB</div><div class="f">${t.customers || 0} 个客户</div></div>
+          <div class="kpi"><div class="l">总营收</div><div class="v">$ ${fmt.money(t.revenue)}</div><div class="f">毛利率 ${marginTxt}</div></div>
+          <div class="kpi"><div class="l">总成本</div><div class="v">$ ${fmt.money(totalCost)}</div><div class="f">平台 $${fmt.money(t.platform_cost)} · 资源 $${fmt.money(t.resource_cost)}</div></div>
+          <div class="kpi"><div class="l">毛利</div><div class="v ${profitClass}">$ ${fmt.money(t.gross_profit)}</div><div class="f">营收 − 平台 − 资源</div></div>
+        </div>
+        <div class="kpi-grid" style="grid-template-columns: repeat(2, minmax(0,1fr));">
+          <div class="kpi"><div class="l">累计充值（全部客户）</div><div class="v">$ ${fmt.money(t.total_recharge)}</div></div>
+          <div class="kpi"><div class="l">当前余额（全部客户）</div><div class="v">$ ${fmt.money(t.total_balance)}</div></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>按融合平台汇总</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>平台</th>
+              <th class="num">客户数</th>
+              <th class="num">流量(TB)</th>
+              <th class="num">营收</th>
+              <th class="num">平台成本</th>
+              <th class="num">资源成本</th>
+              <th class="num">总成本</th>
+              <th class="num">毛利</th>
+              <th class="num">毛利率</th>
+            </tr>
+          </thead>
+          <tbody>${providerRows}</tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>客户明细</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>客户</th>
+              <th>融合平台</th>
+              <th class="num">单价(USDT/TB)</th>
+              <th class="num">流量(TB)</th>
+              <th class="num">营收</th>
+              <th class="num">成本</th>
+              <th class="num">毛利</th>
+              <th class="num">毛利率</th>
+              <th class="num">余额</th>
+            </tr>
+          </thead>
+          <tbody>${customerRows}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="3">合计</td>
+              <td class="num">${fmt.traffic(t.traffic_gb)}</td>
+              <td class="num">$ ${fmt.money(t.revenue)}</td>
+              <td class="num">$ ${fmt.money(totalCost)}</td>
+              <td class="num ${profitClass}">$ ${fmt.money(t.gross_profit)}</td>
+              <td class="num">${marginTxt}</td>
+              <td class="num">$ ${fmt.money(t.total_balance)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </section>
+
+      <footer class="mt-6 text-[10.5px] text-slate-400 leading-relaxed border-t border-slate-200 pt-3">
+        本报表由 BCDN 融合控制台自动生成。营收 = Σ(流量 × 客户单价)；平台成本 = 营收 × 平台成本比例；资源成本 = 流量 × 资源单价；毛利 = 营收 − 平台成本 − 资源成本。<br/>
+        数值精度：流量保留 4 位小数（TB），金额保留 2 位小数（USDT）。
+      </footer>
+    </article>
+  `;
+}
+
+// Toolbar bindings (set up once at boot).
+document.getElementById('report-range').addEventListener('change', (e) => {
+  reportState.range = e.target.value === 'all' ? 'all' : 'month';
+  const inp = document.getElementById('report-month');
+  inp.disabled = (reportState.range === 'all');
+  inp.classList.toggle('opacity-50', reportState.range === 'all');
+  loadRevenueReport();
+});
+document.getElementById('report-month').addEventListener('change', (e) => {
+  reportState.month = e.target.value || fmt.monthNow();
+  if (reportState.range !== 'all') loadRevenueReport();
+});
+document.getElementById('btn-report-refresh').addEventListener('click', loadRevenueReport);
+document.getElementById('btn-report-print').addEventListener('click', () => {
+  // Tiny delay lets the browser finish any pending layout (toolbar
+  // hide etc.) before showing the print dialog.
+  setTimeout(() => window.print(), 50);
+});
+
 // Boot
 reloadAndRender();
 
@@ -1176,4 +1384,5 @@ window.syncCustomer          = syncCustomer;
 window.recomputeCustomer     = recomputeCustomer;
 window.openRechargeModal     = openRechargeModal;
 window.openProviderCostModal = openProviderCostModal;
+window.openRevenueReport     = openRevenueReport;
 window.UI                    = UI;

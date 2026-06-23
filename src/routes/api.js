@@ -512,6 +512,95 @@ router.get('/provider-summaries', (req, res) => {
   ok(res, stats.listProviderSummaries(req.query.month));
 });
 
+// =====================================================
+// Reports (revenue export)
+// =====================================================
+
+/**
+ * One-shot data bundle for the revenue report preview / PDF export.
+ *
+ * Query:
+ *   ?month=YYYY-MM   (default = current month)
+ *   ?month=all       (lifetime view; uses every recorded row)
+ *
+ * Returns:
+ *   {
+ *     period:    'YYYY-MM' | 'all',
+ *     label:     human readable label,
+ *     generated_at: ISO datetime string,
+ *     totals:    { customers, traffic_gb, revenue, platform_cost,
+ *                  resource_cost, total_cost, gross_profit, margin,
+ *                  total_recharge, total_balance },
+ *     providers: [ provider summary rows ],
+ *     customers: [ customer rows scoped to the period ],
+ *   }
+ */
+router.get('/reports/revenue', (req, res) => {
+  try {
+    const monthIn = req.query.month;
+    const isAll   = monthIn === 'all' || monthIn === 'ALL';
+    const period  = isAll ? 'all' : (monthIn || stats.nowYearMonth());
+    const label   = isAll ? '全区间' : period;
+
+    const customers = stats.listCustomersWithStats(isAll ? 'all' : period);
+    const providers = stats.listProviderSummaries(isAll ? 'all' : period);
+
+    // Pick the period-scoped numbers from each customer row (the helper
+    // already exposes month_* fields that fall back to lifetime when the
+    // caller passed 'all').
+    const totals = customers.reduce((acc, c) => {
+      acc.traffic_gb    += Number(c.month_traffic_gb || 0);
+      acc.revenue       += Number(c.month_revenue ?? c.month_amount ?? 0);
+      acc.platform_cost += Number(c.month_platform_cost || 0);
+      acc.resource_cost += Number(c.month_resource_cost || 0);
+      acc.gross_profit  += Number(c.month_gross_profit  || 0);
+      acc.total_recharge += Number(c.total_recharge || 0);
+      acc.total_balance  += Number(c.balance || 0);
+      return acc;
+    }, {
+      customers: customers.length,
+      traffic_gb: 0, revenue: 0,
+      platform_cost: 0, resource_cost: 0, gross_profit: 0,
+      total_recharge: 0, total_balance: 0,
+    });
+    totals.total_cost = stats.round2(totals.platform_cost + totals.resource_cost);
+    totals.platform_cost = stats.round2(totals.platform_cost);
+    totals.resource_cost = stats.round2(totals.resource_cost);
+    totals.revenue       = stats.round2(totals.revenue);
+    totals.gross_profit  = stats.round2(totals.gross_profit);
+    totals.traffic_gb    = stats.round4(totals.traffic_gb);
+    totals.total_recharge = stats.round2(totals.total_recharge);
+    totals.total_balance  = stats.round2(totals.total_balance);
+    totals.margin = totals.revenue > 0
+      ? stats.round4(totals.gross_profit / totals.revenue)
+      : null;
+
+    ok(res, {
+      period,
+      label,
+      generated_at: new Date().toISOString(),
+      totals,
+      providers,
+      customers: customers.map(c => ({
+        id:                 c.id,
+        name:               c.name,
+        provider:           c.provider,
+        status:             c.status,
+        unit_price:         c.unit_price,
+        month_traffic_gb:   c.month_traffic_gb,
+        month_revenue:      c.month_revenue ?? c.month_amount ?? 0,
+        month_platform_cost: c.month_platform_cost,
+        month_resource_cost: c.month_resource_cost,
+        month_gross_profit:  c.month_gross_profit,
+        total_recharge:     c.total_recharge,
+        balance:            c.balance,
+      })),
+    });
+  } catch (e) {
+    fail(res, 500, e.message);
+  }
+});
+
 // Upsert one provider's cost config.
 // Body: {
 //   platform_cost_price: 0~1 (ratio, % of revenue),
