@@ -29,7 +29,7 @@ function init() {
       name            TEXT    NOT NULL UNIQUE,
       contact         TEXT,
       remark          TEXT,
-      -- Provider: 'source1' (built-in CDN) | 'source2' (cdnetworks media-live-vod)
+      -- Provider: 'source1' (built-in CDN) | 'source2' (cdnetworks media-live-vod) | 'eo' (Tencent EdgeOne) | 'ycn2' (YCN2 CDN)
       provider        TEXT    NOT NULL DEFAULT 'source1',
       -- API key for the upstream provider (kept server-side only)
       api_key         TEXT,
@@ -161,7 +161,7 @@ function init() {
     INSERT OR IGNORE INTO provider_costs (provider, platform_cost_price, resource_cost_price)
     VALUES (?, 0, 0)
   `);
-  for (const p of ['source1', 'source2', 'eo']) seedProviderCost.run(p);
+  for (const p of ['source1', 'source2', 'eo', 'ycn2']) seedProviderCost.run(p);
 }
 
 function ensureColumn(table, column, def) {

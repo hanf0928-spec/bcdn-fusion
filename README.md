@@ -13,13 +13,15 @@ get **Telegram group alerts** when balance drops below threshold.
 
 - **One customer = one API key** — each customer maps to a single upstream
   provider + API key. Add as many as you want.
-- **Two upstream providers built-in**:
+- **Four upstream providers built-in**:
   - `source1` — built-in CDN (`/api/v1.0/domain/domain-statistics`,
     docs in [`data/md/CDN2.md`](data/md/CDN2.md))
   - `source2` — CDNetworks `/api/report/traffic`
     ([account-level traffic summary](https://docs.cdnetworks.com/));
     HMAC-SHA1 signed Basic auth (needs **username + apiKey**);
     docs in [`data/md/CDN1.pdf`](data/md/CDN1.pdf)
+  - `eo` — Tencent Cloud EdgeOne
+  - `ycn2` — YCN2 CDN Platform (API Key authentication)
 - **Top tab bar UI** — `Overview` (totals across all customers) plus one
   tab per customer, each with its own page (sub-tabs: Overview / Usage /
   Recharges / Alerts).
@@ -167,7 +169,9 @@ curl -X POST http://localhost:3000/api/alerts/check -H 'x-admin-token: ...'
     │   └── providers/
     │       ├── http.js        # tiny HTTPS helper
     │       ├── source1.js     # /api/v1.0/domain/domain-statistics
-    │       └── source2.js     # CDNetworks usage2
+    │       ├── source2.js     # CDNetworks usage2
+    │       ├── eo.js          # Tencent Cloud EdgeOne
+    │       └── ycn2.js        # YCN2 CDN Platform
     └── scripts/
         ├── init-db.js
         └── seed.js            # demo customers (with the user's API keys)

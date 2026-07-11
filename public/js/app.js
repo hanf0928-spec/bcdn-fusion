@@ -73,6 +73,7 @@ const PROVIDER_LABEL = {
   source1: 'YCDN',
   source2: 'CCDN',
   eo:      'EO',
+  ycn2:    'YCN2',
 };
 
 /**

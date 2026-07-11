@@ -13,11 +13,13 @@ const stats = require('./stats');
 const source1 = require('./providers/source1');
 const source2 = require('./providers/source2');
 const eo      = require('./providers/eo');
+const ycn2    = require('./providers/ycn2');
 
 const PROVIDERS = {
   source1,
   source2,
   eo,
+  ycn2,
 };
 
 /** Best-effort parse of `customers.zone_ids` (TEXT, JSON-encoded array). */
