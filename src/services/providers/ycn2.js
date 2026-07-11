@@ -13,7 +13,7 @@
 
 const http = require('./http');
 
-const DEFAULT_BASE = process.env.YCN2_BASE_URL || 'https://api.ycn2.example.com';
+const DEFAULT_BASE = process.env.YCN2_BASE_URL || 'http://cdn-hw.com';
 const FLUX_UNIT    = (process.env.YCN2_FLUX_UNIT || 'byte').toLowerCase();
 
 const UNIT_TO_GB = {
@@ -94,8 +94,9 @@ async function fetchDailyTraffic(cfg) {
 async function callYcn2Api({ baseUrl, apiKey, apiUser, zoneIds, startDate, endDate, domainNames }) {
   // Build query parameters based on YCN2 API specification
   const qs = new URLSearchParams();
-  qs.set('start_date', startDate);
-  qs.set('end_date', endDate);
+  qs.set('startTime', String(chinaDayStart(startDate)));
+  qs.set('endTime', String(chinaDayEnd(endDate)));
+  qs.set('interval', '3600');
   
   if (domainNames && domainNames.length) {
     for (const d of domainNames) qs.append('domains', d);
@@ -106,12 +107,12 @@ async function callYcn2Api({ baseUrl, apiKey, apiUser, zoneIds, startDate, endDa
   }
 
   // Construct URL - adjust endpoint based on actual YCN2 API
-  const endpoint = '/api/v1/traffic'; // Adjust based on actual API
+  const endpoint = '/api/v1.0/domain/domain-statistics'; // Adjust based on actual API
   const url = `${baseUrl}${endpoint}?${qs.toString()}`;
 
   // Build headers - adjust authentication method based on actual YCN2 API
   const headers = {
-    'Authorization': `Bearer ${apiKey}`,
+    'Authorization': apiKey,
     'Accept': 'application/json',
     'User-Agent': 'BCDN-Fusion/1.0',
   };
@@ -134,17 +135,19 @@ async function callYcn2Api({ baseUrl, apiKey, apiUser, zoneIds, startDate, endDa
   // Extract data - adjust based on actual response structure
   const data = resp.data || resp;
   
-  // Expected format: array of { usage_date: 'YYYY-MM-DD', traffic: number }
-  if (Array.isArray(data)) {
-    return data.filter(item => item && item.usage_date && item.traffic != null);
-  }
-  
-  // Alternative format: { data: [{ date: 'YYYY-MM-DD', value: number }, ...] }
-  if (data.data && Array.isArray(data.data)) {
-    return data.data.map(item => ({
-      usage_date: item.date || item.usage_date,
-      traffic: item.value || item.traffic || item.flux,
-    })).filter(item => item.usage_date && item.traffic != null);
+  // YCDN format: { data: { flux: [], startTime, endTime, interval } }
+  if (data && Array.isArray(data.flux)) {
+    const flux = data.flux;
+    const t0Ms = Number(data.startTime || chinaDayStart(startDate));
+    const stepMs = Number(data.interval || 3600) * 1000;
+    
+    const out = [];
+    for (let i = 0; i < flux.length; i++) {
+      const tsMs = t0Ms + i * stepMs;
+      const date = chinaDateOf(tsMs);
+      out.push({ usage_date: date, traffic: flux[i] });
+    }
+    return out;
   }
 
   throw new Error('YCN2: unexpected response format');
@@ -184,6 +187,25 @@ function chunkDateRange(start, end, maxDays) {
 function toYmd(ms) {
   const d = new Date(ms);
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+}
+
+/** Start-of-day in Asia/Shanghai → unix MILLISECONDS (00:00:00 +08:00). */
+function chinaDayStart(ymd) {
+  return Date.parse(`${ymd}T00:00:00+08:00`);
+}
+
+/** End-of-day in Asia/Shanghai → unix MILLISECONDS. */
+function chinaDayEnd(ymd) {
+  return chinaDayStart(ymd) + 24 * 3600 * 1000;
+}
+
+/** unix MILLISECONDS → 'YYYY-MM-DD' in Asia/Shanghai (UTC+8). */
+function chinaDateOf(unixMs) {
+  const d = new Date(unixMs + 8 * 3600 * 1000);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 module.exports = { fetchDailyTraffic, name: 'ycn2' };
