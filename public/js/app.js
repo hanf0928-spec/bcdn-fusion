@@ -1146,20 +1146,20 @@ async function openProviderCostModal() {
             </div>
             <div class="text-xs text-slate-400 mt-1">按营收百分比计费，例如 30 表示 30%</div>
           </div>
-          <div class="grid grid-cols-3 gap-3">
-            <div>
-              <label class="block text-xs font-medium text-slate-600 mb-1">流量（USDT/TB）</label>
-              <input class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm num"
+          <div class="space-y-2">
+            <div class="flex items-center gap-2">
+              <label class="text-xs font-medium text-slate-600 shrink-0 w-28">流量 <span class="text-slate-400 font-normal">USDT/TB</span></label>
+              <input class="flex-1 min-w-0 px-3 py-2 border border-slate-300 rounded-lg text-sm num"
                      name="traffic_tb" type="number" step="0.01" min="0" value="${tTB}" />
             </div>
-            <div>
-              <label class="block text-xs font-medium text-slate-600 mb-1">请求（USDT/万次）</label>
-              <input class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm num"
+            <div class="flex items-center gap-2">
+              <label class="text-xs font-medium text-slate-600 shrink-0 w-28">请求 <span class="text-slate-400 font-normal">USDT/万次</span></label>
+              <input class="flex-1 min-w-0 px-3 py-2 border border-slate-300 rounded-lg text-sm num"
                      name="request_wan" type="number" step="0.0001" min="0" value="${rWan}" />
             </div>
-            <div>
-              <label class="block text-xs font-medium text-slate-600 mb-1">域名（USDT/个）</label>
-              <input class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm num"
+            <div class="flex items-center gap-2">
+              <label class="text-xs font-medium text-slate-600 shrink-0 w-28">域名 <span class="text-slate-400 font-normal">USDT/个</span></label>
+              <input class="flex-1 min-w-0 px-3 py-2 border border-slate-300 rounded-lg text-sm num"
                      name="domain_cnt" type="number" step="0.01" min="0" value="${dCnt}" />
             </div>
           </div>
