@@ -60,6 +60,26 @@ const fmt = {
   traffic(gb) { return (Number(gb || 0) / GB_PER_TB).toFixed(4); },
   /** USDT/GB → "X.XX" USDT/TB (number only, 2 decimals). */
   pricePerTB(pricePerGB) { return (Number(pricePerGB || 0) * GB_PER_TB).toFixed(2); },
+  /** USDT/次 → "X.XXXX" USDT/万次 (4 decimals). */
+  pricePerWan(pricePer) { return (Number(pricePer || 0) * 10000).toFixed(4); },
+  /**
+   * Build a compact HTML string describing the customer's three-mode pricing.
+   *   c: { unit_price_traffic (USDT/GB), unit_price_request (USDT/次),
+   *        unit_price_domain (USDT/个), unit_price (legacy) }
+   * Traffic price is the headline; request/domain are secondary muted lines.
+   */
+  priceTriple(c) {
+    const pT = Number(c.unit_price_traffic ?? c.unit_price ?? 0);
+    const pR = Number(c.unit_price_request ?? 0);
+    const pD = Number(c.unit_price_domain  ?? 0);
+    const tb  = (pT * GB_PER_TB).toFixed(2);
+    const wan = (pR * 10000).toFixed(4);
+    const dom = pD.toFixed(2);
+    return `<div class="leading-tight" title="流量 ${tb} USDT/TB\n请求 ${wan} USDT/万次\n域名 ${dom} USDT/个">`
+      + `<div class="num">${tb} <span class="text-[10px] text-slate-400">/TB</span></div>`
+      + `<div class="text-[10px] text-slate-400 num">${wan}/万次 · ${dom}/个</div>`
+      + `</div>`;
+  },
   ymdNow() { return new Date().toISOString().slice(0, 10); },
   monthNow() { return new Date().toISOString().slice(0, 7); },
   esc(s) {
@@ -74,6 +94,12 @@ const PROVIDER_LABEL = {
   source2: 'CCDN',
   eo:      'EO',
   ycn2:    'YCN2',
+};
+
+const SCENE_LABEL = {
+  download: '下载',
+  vod:      '点播',
+  cn2:      'CN2',
 };
 
 /**
@@ -266,7 +292,7 @@ function renderOverviewPage(el) {
             <tr>
               <th class="text-left px-6 py-3">客户</th>
               <th class="text-left px-4 py-3">融合平台</th>
-              <th class="text-right px-4 py-3">单价（USDT/TB）</th>
+              <th class="text-right px-4 py-3">客户单价</th>
               <th class="text-right px-4 py-3">${state.range === 'all' ? '累计' : '本月'}流量（TB）</th>
               <th class="text-right px-4 py-3">${state.range === 'all' ? '累计' : '本月'}营收（USDT）</th>
               <th class="text-right px-4 py-3">平台成本</th>
@@ -295,6 +321,7 @@ function overviewRow(c) {
     ? `<span class="badge badge-green">启用</span>`
     : `<span class="badge badge-slate">停用</span>`;
   const providerBadge = `<span class="badge badge-slate">${fmt.esc(PROVIDER_LABEL[c.provider] || c.provider || '—')}</span>`;
+  const sceneBadge = `<span class="badge badge-slate">${fmt.esc(SCENE_LABEL[c.scene] || c.scene || '下载')}</span>`;
   const monthRevenue = Number(c.month_revenue ?? c.month_amount ?? 0);
   const monthProfit  = Number(c.month_gross_profit || 0);
   const profitClass  = monthProfit >= 0 ? 'text-emerald-700' : 'text-rose-600';
@@ -307,8 +334,8 @@ function overviewRow(c) {
         </div>
         <div class="text-xs text-slate-500 mt-0.5">${fmt.esc(c.contact || '—')}</div>
       </td>
-      <td class="px-4 py-4">${providerBadge}</td>
-      <td class="px-4 py-4 text-right num">${fmt.pricePerTB(c.unit_price)}</td>
+      <td class="px-4 py-4">${providerBadge} ${sceneBadge}</td>
+      <td class="px-4 py-4 text-right num">${fmt.priceTriple(c)}</td>
       <td class="px-4 py-4 text-right num">${fmt.traffic(c.month_traffic_gb)}</td>
       <td class="px-4 py-4 text-right num">$ ${fmt.money(monthRevenue)}</td>
       <td class="px-4 py-4 text-right num text-slate-500">$ ${fmt.money(c.month_platform_cost)}</td>
@@ -333,6 +360,7 @@ function renderProviderSummarySection() {
 
   const cards = list.map(p => {
     const label = PROVIDER_LABEL[p.provider] || p.provider;
+    const sceneLabel = SCENE_LABEL[p.scene] || p.scene;
     const monthRev    = Number(p.month_revenue || 0);
     const monthCost   = Number(p.month_platform_cost || 0) + Number(p.month_resource_cost || 0);
     const monthProfit = Number(p.month_gross_profit || 0);
@@ -343,19 +371,23 @@ function renderProviderSummarySection() {
     const totalMargin = p.total_margin != null ? (Number(p.total_margin) * 100).toFixed(1) + '%' : '—';
     const monthClass  = monthProfit >= 0 ? 'text-emerald-600' : 'text-rose-600';
     const totalClass  = totalProfit >= 0 ? 'text-emerald-600' : 'text-rose-600';
-    const platPct     = (Number(p.platform_cost_price || 0) * 100).toFixed(2);
-    const resTB       = (Number(p.resource_cost_price || 0) * GB_PER_TB).toFixed(2);
+    const platPct     = (Number(p.platform_cost_ratio || 0) * 100).toFixed(2);
+    const tPrice      = (Number(p.traffic_unit_price || 0) * GB_PER_TB).toFixed(2);
+    const rPrice      = (Number(p.request_unit_price || 0) * 10000).toFixed(2);
+    const dPrice      = (Number(p.domain_unit_price || 0)).toFixed(2);
 
     return `
       <div class="border border-slate-200 rounded-xl bg-white p-4">
         <div class="flex items-center justify-between mb-3">
           <div>
-            <div class="font-semibold text-slate-800">${fmt.esc(label)}</div>
-            <div class="text-xs text-slate-400 mt-0.5">${fmt.esc(p.provider)} · ${p.customer_count} 个客户</div>
+            <div class="font-semibold text-slate-800">${fmt.esc(label)} · ${fmt.esc(sceneLabel)}</div>
+            <div class="text-xs text-slate-400 mt-0.5">${fmt.esc(p.provider)} / ${fmt.esc(p.scene)} · ${p.customer_count} 个客户</div>
           </div>
           <div class="text-right text-xs text-slate-500 leading-snug">
             <div>平台 <span class="text-slate-700 font-medium">${platPct}%</span></div>
-            <div>资源 <span class="text-slate-700 font-medium">$${resTB}</span>/TB</div>
+            <div>流量 <span class="text-slate-700 font-medium">$${tPrice}</span>/TB</div>
+            <div>请求 <span class="text-slate-700 font-medium">$${rPrice}</span>/万次</div>
+            <div>域名 <span class="text-slate-700 font-medium">$${dPrice}</span>/个</div>
           </div>
         </div>
 
@@ -432,6 +464,7 @@ async function renderCustomerPage(el, id) {
             <h2 class="text-xl font-bold tracking-tight">${fmt.esc(c.name)}</h2>
             <span class="badge ${c.status === 'active' ? 'badge-green' : 'badge-slate'}">${c.status === 'active' ? '启用' : '停用'}</span>
             <span class="badge badge-slate">${fmt.esc(PROVIDER_LABEL[c.provider] || c.provider || '—')}</span>
+            <span class="badge badge-slate">${fmt.esc(SCENE_LABEL[c.scene] || c.scene || '下载')}</span>
             ${c.balance < c.alert_threshold ? `<span class="badge badge-red">余额不足</span>` : ''}
           </div>
           <div class="text-xs text-slate-500 mt-1">
@@ -465,18 +498,18 @@ async function renderCustomerPage(el, id) {
           <div class="stat-value num">$ ${fmt.money(c.total_recharge)} <span class="text-base text-slate-400">USDT</span></div></div>
         <div class="stat-card"><div class="stat-label">累计流量</div>
           <div class="stat-value num">${fmt.traffic(c.total_traffic_gb)} <span class="text-base text-slate-400">TB</span></div></div>
-        <div class="stat-card"><div class="stat-label">单价</div>
-          <div class="stat-value num">$ ${fmt.pricePerTB(c.unit_price)}</div>
-          <div class="stat-foot">USDT 每 TB</div></div>
+        <div class="stat-card"><div class="stat-label">客户单价</div>
+          <div class="stat-value num text-2xl">$ ${fmt.pricePerTB(c.unit_price_traffic ?? c.unit_price)}</div>
+          <div class="stat-foot">USDT / TB · 请求 ${fmt.pricePerWan(c.unit_price_request)} /万次 · 域名 ${fmt.money(c.unit_price_domain)} /个</div></div>
         <div class="stat-card"><div class="stat-label">累计营收</div>
           <div class="stat-value num">$ ${fmt.money(c.total_revenue ?? c.total_usage)} <span class="text-base text-slate-400">USDT</span></div>
-          <div class="stat-foot">流量 × 客户单价</div></div>
+          <div class="stat-foot">三项合计：流量 + 请求 + 域名</div></div>
         <div class="stat-card"><div class="stat-label">累计平台成本</div>
           <div class="stat-value num">$ ${fmt.money(c.total_platform_cost)} <span class="text-base text-slate-400">USDT</span></div>
-          <div class="stat-foot">占营收 ${(Number(c.platform_cost_price || 0) * 100).toFixed(2)}%</div></div>
+          <div class="stat-foot">占营收 ${(Number(c.platform_cost_ratio || 0) * 100).toFixed(2)}%</div></div>
         <div class="stat-card"><div class="stat-label">累计资源成本</div>
           <div class="stat-value num">$ ${fmt.money(c.total_resource_cost)} <span class="text-base text-slate-400">USDT</span></div>
-          <div class="stat-foot">单价 ${fmt.pricePerTB(c.resource_cost_price)} USDT/TB</div></div>
+          <div class="stat-foot">流量 ${fmt.money(c.total_traffic_fee)} · 请求 ${fmt.money(c.total_request_fee)} · 域名 ${fmt.money(c.total_domain_fee)}</div></div>
         <div class="stat-card"><div class="stat-label">累计毛利</div>
           <div class="stat-value num ${Number(c.total_gross_profit) >= 0 ? 'text-emerald-600' : 'text-rose-600'}">$ ${fmt.money(c.total_gross_profit)} <span class="text-base text-slate-400">USDT</span></div>
           <div class="stat-foot">${Number(c.total_revenue ?? 0) > 0 ? `毛利率 ${(Number(c.total_gross_profit) / Number(c.total_revenue) * 100).toFixed(1)}%` : '—'}</div></div>
@@ -536,10 +569,14 @@ function renderDetailOverview(el) {
         <div class="section-title">客户信息</div>
         <dl class="text-sm space-y-2">
           <div class="flex justify-between"><dt class="text-slate-500">融合平台</dt><dd>${fmt.esc(PROVIDER_LABEL[c.provider] || c.provider)}</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">业务场景</dt><dd>${fmt.esc(SCENE_LABEL[c.scene] || c.scene || '下载')}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">API 用户名</dt><dd class="font-mono text-xs">${fmt.esc(c.api_user || '（无）')}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">API 基础地址</dt><dd class="font-mono text-xs text-right break-all">${fmt.esc(c.api_base_url || '（默认）')}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">状态</dt><dd>${c.status === 'active' ? '启用' : '停用'}</dd></div>
-          <div class="flex justify-between"><dt class="text-slate-500">单价</dt><dd class="num">$ ${fmt.pricePerTB(c.unit_price)} USDT / TB</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">客户单价</dt><dd class="num text-right text-xs">
+            $${fmt.pricePerTB(c.unit_price_traffic ?? c.unit_price)} /TB ·
+            $${fmt.pricePerWan(c.unit_price_request)} /万次 ·
+            $${fmt.money(c.unit_price_domain)} /个</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">告警阈值</dt><dd class="num">$ ${fmt.money(c.alert_threshold)} USDT</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">流量校准</dt><dd class="text-right text-xs">${renderAdjustSummary(c)}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">TG chat_id</dt><dd class="font-mono text-xs">${fmt.esc(c.tg_chat_id || '（使用全局）')}</dd></div>
@@ -766,16 +803,27 @@ function openCustomerModal(id) {
       form.contact.value      = c.contact || '';
       form.status.value       = c.status || 'active';
       form.provider.value     = c.provider || 'source1';
+      if (form.scene) form.scene.value = c.scene || 'download';
       form.api_user.value     = c.api_user || '';
       form.api_base_url.value = c.api_base_url || '';
       // zone_ids comes back as an array (or null) from the API.
       if (form.zone_ids) {
         form.zone_ids.value = Array.isArray(c.zone_ids) ? c.zone_ids.join(', ') : '';
       }
-      // Backend stores USDT/GB; the form input asks for USDT/TB.
-      form.unit_price.value   = c.unit_price != null
-        ? Number((Number(c.unit_price) * GB_PER_TB).toFixed(2))
-        : 0;
+      // Backend stores USDT/GB (traffic), USDT/次 (request), USDT/个 (domain);
+      // the form asks for USDT/TB, USDT/万次, USDT/个 respectively.
+      const priceTrafficGb = Number(c.unit_price_traffic ?? c.unit_price ?? 0);
+      const priceRequest   = Number(c.unit_price_request ?? 0);
+      const priceDomain    = Number(c.unit_price_domain  ?? 0);
+      if (form.unit_price_traffic_tb) {
+        form.unit_price_traffic_tb.value  = Number((priceTrafficGb * GB_PER_TB).toFixed(2));
+      }
+      if (form.unit_price_request_wan) {
+        form.unit_price_request_wan.value = Number((priceRequest * 10000).toFixed(4));
+      }
+      if (form.unit_price_domain_cnt) {
+        form.unit_price_domain_cnt.value  = Number(priceDomain.toFixed(2));
+      }
       form.alert_threshold.value = c.alert_threshold ?? 0;
       // Calibration: pct stored as-is; absolute delta stored in GB but
       // displayed in TB to match the rest of the UI's units.
@@ -822,8 +870,15 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
   const editing = !!f.id.value;
   const apiKeyVal = f.api_key.value.trim();
 
-  // Form's unit_price is in USDT/TB; backend stores USDT/GB.
-  const unitPriceTB = parseFloat(f.unit_price.value || '0');
+  // Form: traffic in USDT/TB → backend USDT/GB
+  //       request in USDT/万次 → backend USDT/次
+  //       domain  in USDT/个   (same on both sides)
+  const priceTrafficTB    = parseFloat((f.unit_price_traffic_tb  && f.unit_price_traffic_tb.value)  || '0');
+  const priceRequestWan   = parseFloat((f.unit_price_request_wan && f.unit_price_request_wan.value) || '0');
+  const priceDomainCnt    = parseFloat((f.unit_price_domain_cnt  && f.unit_price_domain_cnt.value)  || '0');
+  const priceTrafficGb = Number.isFinite(priceTrafficTB)  ? priceTrafficTB  / GB_PER_TB : 0;
+  const priceRequestPer = Number.isFinite(priceRequestWan) ? priceRequestWan / 10000     : 0;
+  const priceDomainPer  = Number.isFinite(priceDomainCnt)  ? priceDomainCnt              : 0;
   // Calibration: pct passes through as-is; UI delta is TB but backend
   // stores GB to match the traffic_gb column.
   const adjPctVal   = parseFloat((f.traffic_adjust_pct && f.traffic_adjust_pct.value) || '0');
@@ -834,9 +889,13 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
     contact: f.contact.value.trim() || null,
     status: f.status.value,
     provider: f.provider.value,
+    scene: (f.scene && f.scene.value) || 'download',
     api_user: f.api_user.value.trim() || null,
     api_base_url: f.api_base_url.value.trim() || null,
-    unit_price: Number.isFinite(unitPriceTB) ? unitPriceTB / GB_PER_TB : 0,
+    unit_price:         priceTrafficGb,   // legacy alias for back-compat
+    unit_price_traffic: priceTrafficGb,
+    unit_price_request: priceRequestPer,
+    unit_price_domain:  priceDomainPer,
     alert_threshold: parseFloat(f.alert_threshold.value || '0'),
     tg_chat_id: f.tg_chat_id.value.trim() || null,
     remark: f.remark.value.trim() || null,
@@ -1009,12 +1068,14 @@ document.getElementById('btn-provider-costs').addEventListener('click', () => op
 document.getElementById('btn-revenue-report').addEventListener('click', () => openRevenueReport());
 
 // ============================================================
-// Provider-cost modal
-//   GET  /api/provider-costs           -> list of {provider, platform_cost_price, resource_cost_price}
-//   PUT  /api/provider-costs/:provider -> upsert {platform_cost_price, resource_cost_price}
+// Provider-cost modal (keyed by provider × scene)
+//   GET  /api/scene-costs             -> list of (provider, scene) cost rows
+//   PUT  /api/scene-costs/:provider/:scene -> upsert {platform_cost_ratio,
+//        traffic_unit_price, request_unit_price, domain_unit_price}
 //
-// Prices are stored as USDT/GB on the server but edited as USDT/TB in
-// the UI (× 1000), matching the customer unit-price convention.
+// Prices are stored in canonical units on the server but edited in
+// display units in the UI (traffic USDT/TB, request USDT/万次, domain
+// USDT/个), matching the customer unit-price convention.
 // ============================================================
 async function openProviderCostModal() {
   UI.openModal('modal-provider-costs');
@@ -1022,75 +1083,106 @@ async function openProviderCostModal() {
   body.innerHTML = `<div class="text-center text-slate-400 py-10">加载中…</div>`;
   let rows;
   try {
-    rows = await API.get('/api/provider-costs?with_stats=1');
+    rows = await API.get('/api/scene-costs?with_stats=1');
   } catch (e) {
     body.innerHTML = `<div class="text-center text-rose-600 py-10">加载失败：${fmt.esc(e.message)}</div>`;
     return;
   }
   if (!rows || !rows.length) {
-    body.innerHTML = `<div class="text-center text-slate-500 py-10">暂无可配置的融合平台。</div>`;
+    body.innerHTML = `<div class="text-center text-slate-500 py-10">暂无可配置的成本组合。</div>`;
     return;
   }
 
-  body.innerHTML = `
-    <form id="form-provider-costs" class="space-y-4">
-      ${rows.map(r => {
-        const platPct = (Number(r.platform_cost_price) * 100).toFixed(2);
-        const resTB   = (Number(r.resource_cost_price) * GB_PER_TB).toFixed(2);
-        const cnt     = Number(r.customer_count || 0);
-        const traffic = fmt.traffic(r.total_traffic_gb);
-        const revenue = fmt.money(r.total_revenue);
-        const platCost = fmt.money(r.total_platform_cost);
-        const resCost  = fmt.money(r.total_resource_cost);
-        const profit   = Number(r.total_gross_profit || 0);
-        const profitClass = profit >= 0 ? 'text-emerald-700' : 'text-rose-600';
-        const margin = (r.margin != null) ? `${(Number(r.margin) * 100).toFixed(1)}%` : '—';
-        return `
-        <div class="border border-slate-200 rounded-lg p-4" data-provider="${fmt.esc(r.provider)}">
-          <div class="flex items-center justify-between mb-3">
-            <div class="font-semibold text-slate-800">${fmt.esc(PROVIDER_LABEL[r.provider] || r.provider)}</div>
-            <span class="badge badge-slate text-xs">${fmt.esc(r.provider)}</span>
-          </div>
+  // Group by provider, then render each (provider, scene) as a sub-card.
+  const byProvider = new Map();
+  for (const r of rows) {
+    if (!byProvider.has(r.provider)) byProvider.set(r.provider, []);
+    byProvider.get(r.provider).push(r);
+  }
 
-          <div class="bg-slate-50 border border-slate-100 rounded-lg p-3 mb-3 text-xs">
-            <div class="text-slate-500 mb-1.5">该来源累计指标（${cnt} 个客户）</div>
-            <div class="grid grid-cols-2 gap-x-4 gap-y-1">
-              <div class="flex items-baseline justify-between"><span class="text-slate-500">流量</span><span class="num text-slate-800">${traffic} TB</span></div>
-              <div class="flex items-baseline justify-between"><span class="text-slate-500">营收</span><span class="num text-slate-800">$ ${revenue}</span></div>
-              <div class="flex items-baseline justify-between"><span class="text-slate-500">平台成本</span><span class="num text-slate-500">$ ${platCost}</span></div>
-              <div class="flex items-baseline justify-between"><span class="text-slate-500">资源成本</span><span class="num text-slate-500">$ ${resCost}</span></div>
-              <div class="flex items-baseline justify-between col-span-2 border-t border-slate-200 mt-1 pt-1">
-                <span class="text-slate-500">毛利 <span class="text-slate-400">(${margin})</span></span>
-                <span class="num font-semibold ${profitClass}">$ ${fmt.money(profit)}</span>
-              </div>
+  const sceneCard = (r) => {
+    const provider = r.provider, scene = r.scene;
+    const platPct = (Number(r.platform_cost_ratio) * 100).toFixed(2);
+    // Traffic stored USDT/GB → display USDT/TB; request stored USDT/万次; domain USDT/个.
+    const tTB  = (Number(r.traffic_unit_price) * GB_PER_TB).toFixed(2);
+    const rWan = (Number(r.request_unit_price) * 10000).toFixed(2);
+    const dCnt = (Number(r.domain_unit_price)).toFixed(2);
+    const cnt     = Number(r.customer_count || 0);
+    const traffic = fmt.traffic(r.total_traffic_gb);
+    const revenue = fmt.money(r.total_revenue);
+    const platCost = fmt.money(r.total_platform_cost);
+    const resCost  = fmt.money(r.total_resource_cost);
+    const profit   = Number(r.total_gross_profit || 0);
+    const profitClass = profit >= 0 ? 'text-emerald-700' : 'text-rose-600';
+    const margin = (r.margin != null) ? `${(Number(r.margin) * 100).toFixed(1)}%` : '—';
+    return `
+      <div class="border border-slate-200 rounded-lg p-4" data-provider="${fmt.esc(provider)}" data-scene="${fmt.esc(scene)}">
+        <div class="flex items-center justify-between mb-3">
+          <div class="font-semibold text-slate-800">${fmt.esc(SCENE_LABEL[scene] || scene)} <span class="text-xs text-slate-400 font-normal">（${fmt.esc(scene)}）</span></div>
+          <span class="badge badge-slate text-xs">${cnt} 客户</span>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-100 rounded-lg p-3 mb-3 text-xs">
+          <div class="text-slate-500 mb-1.5">该组合累计指标</div>
+          <div class="grid grid-cols-2 gap-x-4 gap-y-1">
+            <div class="flex items-baseline justify-between"><span class="text-slate-500">流量</span><span class="num text-slate-800">${traffic} TB</span></div>
+            <div class="flex items-baseline justify-between"><span class="text-slate-500">营收</span><span class="num text-slate-800">$ ${revenue}</span></div>
+            <div class="flex items-baseline justify-between"><span class="text-slate-500">平台成本</span><span class="num text-slate-500">$ ${platCost}</span></div>
+            <div class="flex items-baseline justify-between"><span class="text-slate-500">资源成本</span><span class="num text-slate-500">$ ${resCost}</span></div>
+            <div class="flex items-baseline justify-between col-span-2 border-t border-slate-200 mt-1 pt-1">
+              <span class="text-slate-500">毛利 <span class="text-slate-400">(${margin})</span></span>
+              <span class="num font-semibold ${profitClass}">$ ${fmt.money(profit)}</span>
             </div>
           </div>
+        </div>
 
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="block text-xs font-medium text-slate-600 mb-1">平台成本比例（%）</label>
-              <div class="relative">
-                <input class="w-full px-3 py-2 pr-8 border border-slate-300 rounded-lg text-sm num"
-                       name="platform_pct" type="number" step="0.01" min="0" max="100" value="${platPct}" />
-                <span class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">%</span>
-              </div>
-              <div class="text-xs text-slate-400 mt-1">按营收百分比计费，例如 30 表示 30%</div>
+        <div class="space-y-3">
+          <div>
+            <label class="block text-xs font-medium text-slate-600 mb-1">平台成本比例（%）</label>
+            <div class="relative">
+              <input class="w-full px-3 py-2 pr-8 border border-slate-300 rounded-lg text-sm num"
+                     name="platform_pct" type="number" step="0.01" min="0" max="100" value="${platPct}" />
+              <span class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">%</span>
             </div>
+            <div class="text-xs text-slate-400 mt-1">按营收百分比计费，例如 30 表示 30%</div>
+          </div>
+          <div class="grid grid-cols-3 gap-3">
             <div>
-              <label class="block text-xs font-medium text-slate-600 mb-1">资源成本（USDT / TB）</label>
+              <label class="block text-xs font-medium text-slate-600 mb-1">流量（USDT/TB）</label>
               <input class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm num"
-                     name="resource_tb" type="number" step="0.01" min="0" value="${resTB}" />
-              <div class="text-xs text-slate-400 mt-1">按实际用量计费（服务器、带宽等）</div>
+                     name="traffic_tb" type="number" step="0.01" min="0" value="${tTB}" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-600 mb-1">请求（USDT/万次）</label>
+              <input class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm num"
+                     name="request_wan" type="number" step="0.0001" min="0" value="${rWan}" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-600 mb-1">域名（USDT/个）</label>
+              <input class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm num"
+                     name="domain_cnt" type="number" step="0.01" min="0" value="${dCnt}" />
             </div>
           </div>
-          <div class="mt-3">
+          <div>
             <label class="block text-xs font-medium text-slate-600 mb-1">备注</label>
             <input class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
                    name="remark" value="${fmt.esc(r.remark || '')}" />
           </div>
-          <div class="text-xs text-slate-400 mt-2">最近更新：${fmt.esc(r.updated_at || '—')}</div>
-        </div>`;
-      }).join('')}
+        </div>
+        <div class="text-xs text-slate-400 mt-2">最近更新：${fmt.esc(r.updated_at || '—')}</div>
+      </div>`;
+  };
+
+  body.innerHTML = `
+    <form id="form-provider-costs" class="space-y-6">
+      ${Array.from(byProvider.entries()).map(([provider, scenes]) => `
+        <div>
+          <div class="flex items-center gap-2 mb-2">
+            <div class="font-semibold text-slate-700">${fmt.esc(PROVIDER_LABEL[provider] || provider)}</div>
+            <span class="badge badge-slate text-xs">${fmt.esc(provider)}</span>
+          </div>
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">${scenes.map(sceneCard).join('')}</div>
+        </div>`).join('')}
       <div class="flex justify-end gap-2 pt-2">
         <button type="button" class="px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50" onclick="UI.closeModal('modal-provider-costs')">取消</button>
         <button type="submit" class="px-4 py-2 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-700">保存全部</button>
@@ -1100,18 +1192,25 @@ async function openProviderCostModal() {
 
   document.getElementById('form-provider-costs').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const cards = e.target.querySelectorAll('[data-provider]');
+    const cards = e.target.querySelectorAll('[data-provider][data-scene]');
     try {
       for (const card of cards) {
         const provider = card.dataset.provider;
+        const scene    = card.dataset.scene;
         const platPct = parseFloat(card.querySelector('[name=platform_pct]').value || '0');
-        const resTB   = parseFloat(card.querySelector('[name=resource_tb]').value || '0');
+        const tTB     = parseFloat(card.querySelector('[name=traffic_tb]').value || '0');
+        const rWan    = parseFloat(card.querySelector('[name=request_wan]').value || '0');
+        const dCnt    = parseFloat(card.querySelector('[name=domain_cnt]').value || '0');
         const remark  = card.querySelector('[name=remark]').value.trim() || null;
-        await API.put(`/api/provider-costs/${encodeURIComponent(provider)}`, {
-          // platform_cost_price is stored as a 0~1 ratio.
-          platform_cost_price: Number.isFinite(platPct) ? platPct / 100      : 0,
-          // resource_cost_price is USDT/GB (UI uses USDT/TB).
-          resource_cost_price: Number.isFinite(resTB)   ? resTB  / GB_PER_TB : 0,
+        await API.put(`/api/scene-costs/${encodeURIComponent(provider)}/${encodeURIComponent(scene)}`, {
+          // platform_cost_ratio is stored as a 0~1 ratio.
+          platform_cost_ratio:  Number.isFinite(platPct) ? platPct / 100       : 0,
+          // traffic_unit_price stored USDT/GB (UI uses USDT/TB).
+          traffic_unit_price:   Number.isFinite(tTB)   ? tTB   / GB_PER_TB     : 0,
+          // request_unit_price stored USDT/次 → UI is USDT/万次.
+          request_unit_price:   Number.isFinite(rWan)  ? rWan  / 10000         : 0,
+          // domain_unit_price stored USDT/域名, UI is the same unit.
+          domain_unit_price:    Number.isFinite(dCnt)  ? dCnt                 : 0,
           remark,
         });
       }
@@ -1224,6 +1323,7 @@ function renderRevenueReport() {
         return `
           <tr>
             <td>${fmt.esc(label)} <span class="text-slate-400 text-[10px]">(${fmt.esc(p.provider)})</span></td>
+            <td>${fmt.esc(SCENE_LABEL[p.scene] || p.scene)}</td>
             <td class="num">${p.customer_count}</td>
             <td class="num">${fmt.traffic(p.month_traffic_gb)}</td>
             <td class="num">$ ${fmt.money(p.month_revenue)}</td>
@@ -1234,7 +1334,7 @@ function renderRevenueReport() {
             <td class="num">${marg}</td>
           </tr>`;
       }).join('')
-    : `<tr><td colspan="9" class="text-center text-slate-400 py-4">暂无平台数据</td></tr>`;
+    : `<tr><td colspan="10" class="text-center text-slate-400 py-4">暂无平台数据</td></tr>`;
 
   // Customer section
   const customers = d.customers || [];
@@ -1248,7 +1348,8 @@ function renderRevenueReport() {
           <tr>
             <td>${fmt.esc(c.name)}</td>
             <td>${fmt.esc(PROVIDER_LABEL[c.provider] || c.provider || '—')}</td>
-            <td class="num">${fmt.pricePerTB(c.unit_price)}</td>
+            <td>${fmt.esc(SCENE_LABEL[c.scene] || c.scene)}</td>
+            <td class="num">${fmt.priceTriple(c)}</td>
             <td class="num">${fmt.traffic(c.month_traffic_gb)}</td>
             <td class="num">$ ${fmt.money(c.month_revenue)}</td>
             <td class="num">$ ${fmt.money(Number(c.month_platform_cost || 0) + Number(c.month_resource_cost || 0))}</td>
@@ -1257,7 +1358,7 @@ function renderRevenueReport() {
             <td class="num">$ ${fmt.money(c.balance)}</td>
           </tr>`;
       }).join('')
-    : `<tr><td colspan="9" class="text-center text-slate-400 py-4">暂无客户数据</td></tr>`;
+    : `<tr><td colspan="10" class="text-center text-slate-400 py-4">暂无客户数据</td></tr>`;
 
   body.innerHTML = `
     <article class="report-doc">
@@ -1296,6 +1397,7 @@ function renderRevenueReport() {
           <thead>
             <tr>
               <th>平台</th>
+              <th>场景</th>
               <th class="num">客户数</th>
               <th class="num">流量(TB)</th>
               <th class="num">营收</th>
@@ -1317,6 +1419,7 @@ function renderRevenueReport() {
             <tr>
               <th>客户</th>
               <th>融合平台</th>
+              <th>场景</th>
               <th class="num">单价(USDT/TB)</th>
               <th class="num">流量(TB)</th>
               <th class="num">营收</th>
@@ -1329,7 +1432,7 @@ function renderRevenueReport() {
           <tbody>${customerRows}</tbody>
           <tfoot>
             <tr>
-              <td colspan="3">合计</td>
+              <td colspan="4">合计</td>
               <td class="num">${fmt.traffic(t.traffic_gb)}</td>
               <td class="num">$ ${fmt.money(t.revenue)}</td>
               <td class="num">$ ${fmt.money(totalCost)}</td>
@@ -1342,7 +1445,7 @@ function renderRevenueReport() {
       </section>
 
       <footer class="mt-6 text-[10.5px] text-slate-400 leading-relaxed border-t border-slate-200 pt-3">
-        本报表由 BCDN 融合控制台自动生成。营收 = Σ(流量 × 客户单价)；平台成本 = 营收 × 平台成本比例；资源成本 = 流量 × 资源单价；毛利 = 营收 − 平台成本 − 资源成本。<br/>
+        本报表由 BCDN 融合控制台自动生成。营收 = Σ(流量 × 客户单价)；平台成本 = 营收 × 平台成本比例；资源成本 = 流量费(流量×流量单价) + 请求费(请求数×请求单价) + 域名费(域名数×域名单价)，三项合计；毛利 = 营收 − 平台成本 − 资源成本。<br/>
         数值精度：流量保留 4 位小数（TB），金额保留 2 位小数（USDT）。
       </footer>
     </article>

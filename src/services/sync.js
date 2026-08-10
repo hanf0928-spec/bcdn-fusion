@@ -69,15 +69,26 @@ async function syncCustomer(customer, opts = {}) {
     throw e;
   }
 
-  // Upsert each daily row using the customer's current unit_price.
+  // Upsert each daily row using the customer's current three-mode pricing.
+  // request_count / domain_count are placeholders (kept at 0 until the
+  // upstream collection flow exposes them) — collection method is unchanged.
+  //   amount = traffic_fee + request_fee + domain_fee  (three-mode snapshot)
+  //   legacy `unit_price` column mirrors unit_price_traffic for back-compat.
   const upsert = db.prepare(`
-    INSERT INTO usage_records (customer_id, usage_date, traffic_gb, unit_price, amount, remark)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO usage_records
+      (customer_id, usage_date, traffic_gb, request_count, domain_count,
+       unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
+       traffic_fee, request_fee, domain_fee, amount, remark)
+    VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, 0, 0, ?, ?)
     ON CONFLICT(customer_id, usage_date) DO UPDATE SET
-      traffic_gb = excluded.traffic_gb,
-      unit_price = excluded.unit_price,
-      amount     = excluded.amount,
-      remark     = excluded.remark
+      traffic_gb         = excluded.traffic_gb,
+      unit_price         = excluded.unit_price,
+      unit_price_traffic = excluded.unit_price_traffic,
+      unit_price_request = excluded.unit_price_request,
+      unit_price_domain  = excluded.unit_price_domain,
+      traffic_fee        = excluded.traffic_fee,
+      amount             = excluded.amount,
+      remark             = excluded.remark
   `);
 
   let totalTraffic = 0;
@@ -137,18 +148,29 @@ async function syncCustomer(customer, opts = {}) {
   };
 
   const tx = db.transaction((items) => {
+    // Snapshot the customer's current three-mode pricing. request/domain
+    // counts are 0 today (upstream doesn't expose them yet), so only the
+    // traffic axis contributes to amount — but the schema is future-proof.
+    const pT = Number(customer.unit_price_traffic || customer.unit_price || 0);
+    const pR = Number(customer.unit_price_request || 0);
+    const pD = Number(customer.unit_price_domain  || 0);
     for (const it of items) {
       const rawTraffic = Number(it.traffic_gb || 0);
       const traffic = adjustEnabled
         ? Math.max(0, rawTraffic * (1 + adjPct / 100) + deltaShare(it))
         : rawTraffic;
-      const trafficR = stats.round4(traffic);
-      const amount  = stats.round2(trafficR * Number(customer.unit_price || 0));
+      const trafficR   = stats.round4(traffic);
+      const trafficFee = stats.round2(trafficR * pT);
+      // request_count / domain_count are 0 today; keep the placeholder fees
+      // at 0 to match. When upstream starts returning counts, sync will
+      // pass them through here.
+      const amount = trafficFee; // request_fee + domain_fee are 0
       upsert.run(
         customer.id,
         it.usage_date,
         trafficR,
-        Number(customer.unit_price || 0),
+        pT, pT, pR, pD,
+        trafficFee,
         amount,
         `auto:${customer.provider}${adjTag}`,
       );

@@ -31,6 +31,9 @@ function init() {
       remark          TEXT,
       -- Provider: 'source1' (built-in CDN) | 'source2' (cdnetworks media-live-vod) | 'eo' (Tencent EdgeOne) | 'ycn2' (YCN2 CDN)
       provider        TEXT    NOT NULL DEFAULT 'source1',
+      -- Business scenario (business dimension): 'download' | 'vod' | 'cn2'
+      -- Defaults to 'download' when not otherwise specified.
+      scene           TEXT    NOT NULL DEFAULT 'download',
       -- API key for the upstream provider (kept server-side only)
       api_key         TEXT,
       -- API username (for providers that use HTTP Basic auth, e.g. CDNetworks)
@@ -77,6 +80,12 @@ function init() {
       traffic_gb   REAL    NOT NULL DEFAULT 0,
       unit_price   REAL    NOT NULL DEFAULT 0,
       amount       REAL    NOT NULL DEFAULT 0,
+      -- Cost-model placeholders (collected separately "in the future";
+      -- kept at 0 for now so the existing flow is untouched):
+      --   request_count : number of HTTP requests for the day
+      --   domain_count  : number of billed domains for the day
+      request_count REAL NOT NULL DEFAULT 0,
+      domain_count  REAL NOT NULL DEFAULT 0,
       remark       TEXT,
       created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
       FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
@@ -116,20 +125,31 @@ function init() {
     CREATE INDEX IF NOT EXISTS idx_sync_logs_customer ON sync_logs(customer_id, synced_at);
 
     -- ===========================
-    -- Provider-level cost configuration
-    --   - resource_cost_price : USDT / GB     (server / bandwidth / etc.)
-    --   - platform_cost_price : ratio 0~1     (% of revenue paid to upstream)
+    -- Cost configuration keyed by (provider, scene).
     --
-    --   NOTE: column name 'platform_cost_price' is kept for backwards-
-    --   compat, but the value is a *ratio*, not a price (e.g. 0.30
-    --   means 30% of revenue).
+    --   platform_cost_ratio   : 0~1 ratio of revenue paid to the upstream
+    --                           platform (e.g. 0.30 == 30% of revenue).
+    --   traffic_unit_price    : USDT / GB  (resource traffic cost)
+    --   request_unit_price    : USDT / 万次 request (resource request cost)
+    --   domain_unit_price     : USDT / 域名 (resource domain cost)
+    --
+    -- Resource cost (per aggregate) is the SUM of three parts:
+    --   traffic_fee = traffic_gb   * traffic_unit_price
+    --   request_fee = request_count * request_unit_price
+    --   domain_fee  = domain_count  * domain_unit_price
+    -- Total resource cost = traffic_fee + request_fee + domain_fee.
+    -- Total cost = platform_cost (revenue * ratio) + resource_cost.
     -- ===========================
-    CREATE TABLE IF NOT EXISTS provider_costs (
-      provider             TEXT PRIMARY KEY,
-      platform_cost_price  REAL NOT NULL DEFAULT 0,
-      resource_cost_price  REAL NOT NULL DEFAULT 0,
+    CREATE TABLE IF NOT EXISTS scene_costs (
+      provider             TEXT NOT NULL,
+      scene                TEXT NOT NULL,
+      platform_cost_ratio  REAL NOT NULL DEFAULT 0,
+      traffic_unit_price   REAL NOT NULL DEFAULT 0,
+      request_unit_price   REAL NOT NULL DEFAULT 0,
+      domain_unit_price    REAL NOT NULL DEFAULT 0,
       remark               TEXT,
-      updated_at           TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+      updated_at           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      PRIMARY KEY (provider, scene)
     );
   `);
 
@@ -139,6 +159,49 @@ function init() {
   ensureColumn('customers', 'api_user',     `TEXT`);
   ensureColumn('customers', 'api_base_url', `TEXT`);
   ensureColumn('customers', 'last_sync_at', `TEXT`);
+  // Business scenario dimension (download | vod | cn2).
+  ensureColumn('customers', 'scene',        `TEXT NOT NULL DEFAULT 'download'`);
+
+  // Customer-level three-mode pricing (revenue = traffic + request + domain):
+  //   unit_price_traffic : USDT / GB       (UI edits USDT/TB)
+  //   unit_price_request : USDT / request  (UI edits USDT/万次)
+  //   unit_price_domain  : USDT / domain   (UI edits USDT/个)
+  // Legacy `unit_price` column is kept as an alias for `unit_price_traffic`
+  // for backwards-compat (existing seed / API payload keeps working).
+  ensureColumn('customers', 'unit_price_traffic', `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('customers', 'unit_price_request', `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('customers', 'unit_price_domain',  `REAL NOT NULL DEFAULT 0`);
+  // One-time backfill: copy legacy unit_price → unit_price_traffic when the
+  // new column is still zero. Idempotent (only affects rows where the new
+  // column is 0 AND the legacy one is > 0).
+  db.exec(`
+    UPDATE customers
+    SET unit_price_traffic = unit_price
+    WHERE (unit_price_traffic IS NULL OR unit_price_traffic = 0)
+      AND unit_price IS NOT NULL AND unit_price > 0
+  `);
+
+  // Extend usage_records with per-row three-mode price/fee snapshots.
+  //   *_unit_price_*  : snapshot of the customer's price when the row was written
+  //   *_fee           : rounded fee for the axis on that day
+  // The legacy `amount` column now stores traffic_fee + request_fee + domain_fee.
+  ensureColumn('usage_records', 'request_count', `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('usage_records', 'domain_count',  `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('usage_records', 'unit_price_traffic', `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('usage_records', 'unit_price_request', `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('usage_records', 'unit_price_domain',  `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('usage_records', 'traffic_fee', `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('usage_records', 'request_fee', `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('usage_records', 'domain_fee',  `REAL NOT NULL DEFAULT 0`);
+  // Backfill: for historical rows written under the old model, seed the
+  // traffic snapshot from the legacy per-row unit_price.
+  db.exec(`
+    UPDATE usage_records
+    SET unit_price_traffic = unit_price,
+        traffic_fee        = amount
+    WHERE (unit_price_traffic IS NULL OR unit_price_traffic = 0)
+      AND unit_price IS NOT NULL AND unit_price > 0
+  `);
   // EO requires a list of ZoneIds (or ["*"] for all zones under the
   // account). Stored as JSON-encoded array text. NULL/empty => default "*".
   ensureColumn('customers', 'zone_ids',     `TEXT`);
@@ -156,12 +219,14 @@ function init() {
   ensureColumn('customers', 'traffic_adjust_delta_gb',      `REAL NOT NULL DEFAULT 0`);
   ensureColumn('customers', 'traffic_adjust_anchor_month',  `TEXT`);
 
-  // Make sure every known provider has a cost row (zeros until configured).
-  const seedProviderCost = db.prepare(`
-    INSERT OR IGNORE INTO provider_costs (provider, platform_cost_price, resource_cost_price)
-    VALUES (?, 0, 0)
+  // Make sure every (provider, scene) combo has a cost row (zeros until configured).
+  const seedSceneCost = db.prepare(`
+    INSERT OR IGNORE INTO scene_costs (provider, scene, platform_cost_ratio, traffic_unit_price, request_unit_price, domain_unit_price)
+    VALUES (?, ?, 0, 0, 0, 0)
   `);
-  for (const p of ['source1', 'source2', 'eo', 'ycn2']) seedProviderCost.run(p);
+  for (const p of ['source1', 'source2', 'eo', 'ycn2']) {
+    for (const s of ['download', 'vod', 'cn2']) seedSceneCost.run(p, s);
+  }
 }
 
 function ensureColumn(table, column, def) {

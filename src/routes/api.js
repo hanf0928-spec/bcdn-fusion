@@ -108,7 +108,7 @@ router.get('/customers/:id', (req, res) => {
   const cm = stats.buildCostMap();
   const s = stats.getCustomerStats(id, cm);
   const monthly = stats.getCustomerMonthlyUsage(id, undefined, cm);
-  const cost = cm.get(c.provider) || { platform: 0, resource: 0 };
+  const cost = stats.resolveCost(cm, c.provider, c.scene || 'download');
 
   ok(res, {
     ...shapeCustomer(c),
@@ -116,12 +116,19 @@ router.get('/customers/:id', (req, res) => {
     total_usage:          s.totalUsage,         // legacy alias
     total_revenue:        s.totalRevenue,
     total_traffic_gb:     s.totalTraffic,
+    total_request_count:  s.totalRequests,
+    total_domain_count:   s.totalDomains,
     total_platform_cost:  s.totalPlatformCost,
+    total_traffic_fee:    s.totalTrafficFee,
+    total_request_fee:    s.totalRequestFee,
+    total_domain_fee:     s.totalDomainFee,
     total_resource_cost:  s.totalResourceCost,
     total_gross_profit:   s.totalGrossProfit,
     balance:              s.balance,
-    platform_cost_price:  cost.platform,        // USDT / GB
-    resource_cost_price:  cost.resource,        // USDT / GB
+    platform_cost_ratio:  cost.platform,        // 0~1 ratio
+    traffic_unit_price:   cost.traffic,         // USDT / GB
+    request_unit_price:   cost.request,         // USDT / 万次
+    domain_unit_price:    cost.domain,          // USDT / 域名
     monthly,
   });
 });
@@ -131,7 +138,8 @@ router.post('/customers', (req, res) => {
   const {
     name, contact, remark,
     provider, api_key, api_user, api_base_url, zone_ids,
-    unit_price, alert_threshold, tg_chat_id, status,
+    unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
+    alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
   } = req.body || {};
   if (!name || !String(name).trim()) return fail(res, 400, 'name is required');
@@ -140,23 +148,35 @@ router.post('/customers', (req, res) => {
   try { anchorMonthIn = normAnchorMonth(traffic_adjust_anchor_month); }
   catch (e) { return fail(res, 400, e.message); }
 
+  // Three-mode pricing. `unit_price_traffic` is the primary source of
+  // truth; legacy `unit_price` is kept as a mirror for backwards-compat
+  // (falls back to whichever the caller provided).
+  const priceTraffic = num(unit_price_traffic ?? unit_price, 0);
+  const priceRequest = num(unit_price_request, 0);
+  const priceDomain  = num(unit_price_domain,  0);
+
   try {
     const r = db.prepare(`
       INSERT INTO customers
-        (name, contact, remark, provider, api_key, api_user, api_base_url, zone_ids,
-         unit_price, alert_threshold, tg_chat_id, status,
+        (name, contact, remark, provider, scene, api_key, api_user, api_base_url, zone_ids,
+         unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
+         alert_threshold, tg_chat_id, status,
          traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       String(name).trim(),
       contact || null,
       remark  || null,
       provider || 'source1',
+      (scene && ['download', 'vod', 'cn2'].includes(scene)) ? scene : 'download',
       api_key || null,
       api_user || null,
       api_base_url || null,
       normalizeZoneIdsForStorage(zone_ids),
-      num(unit_price, 0),
+      priceTraffic,       // legacy unit_price mirror
+      priceTraffic,
+      priceRequest,
+      priceDomain,
       num(alert_threshold, 0),
       tg_chat_id || null,
       status || 'active',
@@ -180,7 +200,8 @@ router.put('/customers/:id', (req, res) => {
   const {
     name, contact, remark,
     provider, api_key, api_user, api_base_url, zone_ids,
-    unit_price, alert_threshold, tg_chat_id, status,
+    unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
+    alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
   } = req.body || {};
 
@@ -214,17 +235,41 @@ router.put('/customers/:id', (req, res) => {
     ? (c.traffic_adjust_anchor_month || null)
     : anchorMonthIn;
 
+  // scene: undefined keeps current; otherwise validate into the allowed set
+  // (download | vod | cn2), falling back to the existing value if invalid.
+  const nextScene = (scene === undefined)
+    ? c.scene
+    : (['download', 'vod', 'cn2'].includes(scene) ? scene : c.scene);
+
+  // Three-mode pricing on update: `undefined` keeps the current value,
+  // any provided number overwrites. Legacy `unit_price` is treated as an
+  // alias for `unit_price_traffic` when the caller only sent the old key.
+  const nextPriceTraffic = (unit_price_traffic !== undefined)
+    ? num(unit_price_traffic, c.unit_price_traffic || 0)
+    : (unit_price !== undefined ? num(unit_price, c.unit_price_traffic || c.unit_price || 0)
+                                : Number(c.unit_price_traffic || c.unit_price || 0));
+  const nextPriceRequest = (unit_price_request !== undefined)
+    ? num(unit_price_request, c.unit_price_request || 0)
+    : Number(c.unit_price_request || 0);
+  const nextPriceDomain = (unit_price_domain !== undefined)
+    ? num(unit_price_domain, c.unit_price_domain || 0)
+    : Number(c.unit_price_domain || 0);
+
   db.prepare(`
     UPDATE customers SET
       name = ?,
       contact = ?,
       remark = ?,
       provider = ?,
+      scene = ?,
       api_key = ?,
       api_user = ?,
       api_base_url = ?,
       zone_ids = ?,
       unit_price = ?,
+      unit_price_traffic = ?,
+      unit_price_request = ?,
+      unit_price_domain = ?,
       alert_threshold = ?,
       tg_chat_id = ?,
       status = ?,
@@ -238,11 +283,15 @@ router.put('/customers/:id', (req, res) => {
     contact ?? c.contact,
     remark  ?? c.remark,
     provider || c.provider || 'source1',
+    nextScene,
     nextApiKey,
     nextApiUser,
     (api_base_url === undefined) ? c.api_base_url : (api_base_url || null),
     nextZoneIds,
-    num(unit_price, c.unit_price),
+    nextPriceTraffic,   // legacy unit_price mirror
+    nextPriceTraffic,
+    nextPriceRequest,
+    nextPriceDomain,
     num(alert_threshold, c.alert_threshold),
     tg_chat_id ?? c.tg_chat_id,
     status || c.status,
@@ -251,13 +300,15 @@ router.put('/customers/:id', (req, res) => {
     nextAnchorMonth,
     id,
   );
-
-  // If the unit_price was changed, recompute every usage_records row of
-  // this customer so amount/balance stay consistent. (`amount` is just a
-  // snapshot of `traffic_gb * unit_price` at insert time.)
-  const nextPrice = num(unit_price, c.unit_price);
+  // If any of the three price knobs changed, recompute every usage_records
+  // row of this customer so amount/balance stay consistent. (`amount` is a
+  // snapshot of the three-mode fee sum at insert time.)
+  const priceChanged =
+       Math.abs(nextPriceTraffic - Number(c.unit_price_traffic || c.unit_price || 0)) > 1e-9
+    || Math.abs(nextPriceRequest - Number(c.unit_price_request || 0)) > 1e-9
+    || Math.abs(nextPriceDomain  - Number(c.unit_price_domain  || 0)) > 1e-9;
   let recomputed = null;
-  if (Math.abs(nextPrice - Number(c.unit_price || 0)) > 1e-9) {
+  if (priceChanged) {
     recomputed = stats.recomputeUsageAmounts(id);
   }
 
@@ -401,25 +452,64 @@ router.post('/customers/:id/usage', (req, res) => {
   }
   const traffic_gb = num(req.body?.traffic_gb, 0);
   if (traffic_gb < 0) return fail(res, 400, 'traffic_gb must be >= 0');
+  // Placeholder cost-mode metrics; default to 0 (collected upstream later).
+  const request_count = num(req.body?.request_count, 0);
+  const domain_count  = num(req.body?.domain_count, 0);
+  if (request_count < 0) return fail(res, 400, 'request_count must be >= 0');
+  if (domain_count  < 0) return fail(res, 400, 'domain_count must be >= 0');
 
-  // Snapshot current customer unit_price unless override is provided
-  const unit_price = req.body?.unit_price != null
-    ? num(req.body.unit_price, c.unit_price)
-    : c.unit_price;
-  const amount = stats.round2(traffic_gb * unit_price);
+  // Snapshot current customer three-mode pricing unless overridden.
+  //   Legacy `unit_price` acts as an alias for the traffic price when the
+  //   caller only sent the old key.
+  const pT = req.body?.unit_price_traffic != null
+    ? num(req.body.unit_price_traffic, 0)
+    : (req.body?.unit_price != null
+        ? num(req.body.unit_price, 0)
+        : Number(c.unit_price_traffic || c.unit_price || 0));
+  const pR = req.body?.unit_price_request != null
+    ? num(req.body.unit_price_request, 0)
+    : Number(c.unit_price_request || 0);
+  const pD = req.body?.unit_price_domain != null
+    ? num(req.body.unit_price_domain, 0)
+    : Number(c.unit_price_domain || 0);
+
+  const trafficFee = stats.round2(traffic_gb    * pT);
+  const requestFee = stats.round2(request_count * pR);
+  const domainFee  = stats.round2(domain_count  * pD);
+  const amount     = stats.round2(trafficFee + requestFee + domainFee);
 
   // Upsert by (customer_id, usage_date)
   db.prepare(`
-    INSERT INTO usage_records (customer_id, usage_date, traffic_gb, unit_price, amount, remark)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO usage_records
+      (customer_id, usage_date, traffic_gb, request_count, domain_count,
+       unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
+       traffic_fee, request_fee, domain_fee, amount, remark)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(customer_id, usage_date) DO UPDATE SET
-      traffic_gb = excluded.traffic_gb,
-      unit_price = excluded.unit_price,
-      amount     = excluded.amount,
-      remark     = excluded.remark
-  `).run(id, usage_date, traffic_gb, unit_price, amount, req.body?.remark || null);
+      traffic_gb         = excluded.traffic_gb,
+      request_count      = excluded.request_count,
+      domain_count       = excluded.domain_count,
+      unit_price         = excluded.unit_price,
+      unit_price_traffic = excluded.unit_price_traffic,
+      unit_price_request = excluded.unit_price_request,
+      unit_price_domain  = excluded.unit_price_domain,
+      traffic_fee        = excluded.traffic_fee,
+      request_fee        = excluded.request_fee,
+      domain_fee         = excluded.domain_fee,
+      amount             = excluded.amount,
+      remark             = excluded.remark
+  `).run(
+    id, usage_date, traffic_gb, request_count, domain_count,
+    pT, pT, pR, pD,
+    trafficFee, requestFee, domainFee, amount,
+    req.body?.remark || null,
+  );
 
-  ok(res, { customer_id: id, usage_date, traffic_gb, unit_price, amount });
+  ok(res, {
+    customer_id: id, usage_date, traffic_gb, request_count, domain_count,
+    unit_price_traffic: pT, unit_price_request: pR, unit_price_domain: pD,
+    traffic_fee: trafficFee, request_fee: requestFee, domain_fee: domainFee, amount,
+  });
 });
 
 // Delete a single usage record
@@ -445,7 +535,16 @@ router.get('/customers/:id/bills', (req, res) => {
   const s = stats.getCustomerStats(id, cm);
 
   ok(res, {
-    customer: { id: c.id, name: c.name, unit_price: c.unit_price, provider: c.provider },
+    customer: {
+      id: c.id,
+      name: c.name,
+      provider: c.provider,
+      scene: c.scene,
+      unit_price: c.unit_price_traffic ?? c.unit_price,          // legacy alias
+      unit_price_traffic: c.unit_price_traffic ?? c.unit_price ?? 0,
+      unit_price_request: c.unit_price_request ?? 0,
+      unit_price_domain:  c.unit_price_domain  ?? 0,
+    },
     summary:  s,
     monthly,
   });
@@ -496,17 +595,10 @@ router.post('/alerts/test', async (req, res) => {
 });
 
 // =====================================================
-// Provider-level cost prices  (platform / resource)
+// Scene-level cost prices  (provider × scene)
 // =====================================================
 
-// Read all configured providers (optionally with lifetime aggregates).
-// Query: ?with_stats=1 -> include customer_count + lifetime totals.
-router.get('/provider-costs', (req, res) => {
-  const withStats = req.query.with_stats === '1' || req.query.with_stats === 'true';
-  ok(res, stats.listProviderCosts(withStats));
-});
-
-// Aggregated metrics grouped by provider (for the dashboard's
+// Aggregated metrics grouped by (provider, scene) (for the dashboard's
 // "按融合平台汇总" card). Honors ?month=YYYY-MM (default = current month).
 router.get('/provider-summaries', (req, res) => {
   ok(res, stats.listProviderSummaries(req.query.month));
@@ -585,8 +677,12 @@ router.get('/reports/revenue', (req, res) => {
         id:                 c.id,
         name:               c.name,
         provider:           c.provider,
+        scene:              c.scene || 'download',
         status:             c.status,
-        unit_price:         c.unit_price,
+        unit_price:         c.unit_price_traffic ?? c.unit_price ?? 0,
+        unit_price_traffic: c.unit_price_traffic ?? c.unit_price ?? 0,
+        unit_price_request: c.unit_price_request ?? 0,
+        unit_price_domain:  c.unit_price_domain  ?? 0,
         month_traffic_gb:   c.month_traffic_gb,
         month_revenue:      c.month_revenue ?? c.month_amount ?? 0,
         month_platform_cost: c.month_platform_cost,
@@ -601,19 +697,36 @@ router.get('/reports/revenue', (req, res) => {
   }
 });
 
-// Upsert one provider's cost config.
+// =====================================================
+// Scene-level cost prices  (provider × scene)
+// =====================================================
+
+// Read all configured (provider, scene) cost rows, optionally with stats.
+// Query: ?with_stats=1 -> include customer_count + lifetime totals.
+router.get('/scene-costs', (req, res) => {
+  const withStats = req.query.with_stats === '1' || req.query.with_stats === 'true';
+  ok(res, stats.listSceneCosts(withStats));
+});
+
+// Upsert one (provider, scene) cost config.
 // Body: {
-//   platform_cost_price: 0~1 (ratio, % of revenue),
-//   resource_cost_price: USDT / GB,
+//   platform_cost_ratio: 0~1 (ratio, % of revenue),
+//   traffic_unit_price:  USDT / GB,
+//   request_unit_price:  USDT / 万次 request,
+//   domain_unit_price:   USDT / 域名,
 //   remark?
 // }
-router.put('/provider-costs/:provider', (req, res) => {
+router.put('/scene-costs/:provider/:scene', (req, res) => {
   const provider = String(req.params.provider || '').trim();
+  const scene    = String(req.params.scene || '').trim();
   if (!provider) return fail(res, 400, 'provider is required');
+  if (!scene)    return fail(res, 400, 'scene is required');
   try {
-    const row = stats.setProviderCost(provider, {
-      platform_cost_price: num(req.body?.platform_cost_price, 0),
-      resource_cost_price: num(req.body?.resource_cost_price, 0),
+    const row = stats.setSceneCost(provider, scene, {
+      platform_cost_ratio:  num(req.body?.platform_cost_ratio, 0),
+      traffic_unit_price:   num(req.body?.traffic_unit_price, 0),
+      request_unit_price:   num(req.body?.request_unit_price, 0),
+      domain_unit_price:    num(req.body?.domain_unit_price, 0),
       remark: req.body?.remark || null,
     });
     ok(res, row);
