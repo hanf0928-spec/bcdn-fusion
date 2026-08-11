@@ -928,10 +928,11 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
 });
 
 async function deleteCustomer(id, name) {
-  if (!confirm(`确定删除客户「${name}」吗？其充值与用量记录将一并删除。`)) return;
+  if (!confirm(`确定删除客户「${name}」吗？其充值与用量记录将一并删除，且不可恢复。`)) return;
   try {
-    await API.del(`/api/customers/${id}`);
-    UI.toast('客户已删除');
+    const r = await API.del(`/api/customers/${id}`);
+    const extra = (r.deleted_usage_records || 0) + (r.deleted_recharges || 0);
+    UI.toast(extra ? `客户已删除（含 ${extra} 条关联记录）` : '客户已删除');
     if (state.view.type === 'customer' && state.view.id === id) state.view = { type: 'overview' };
     await reloadAndRender();
   } catch (e) { UI.toast(e.message, 'error'); }
@@ -1482,6 +1483,7 @@ window.goCustomer            = goCustomer;
 window.switchDetailTab       = switchDetailTab;
 window.delRecharge           = delRecharge;
 window.delUsage              = delUsage;
+window.deleteCustomer        = deleteCustomer;
 window.checkAlertOne         = checkAlertOne;
 window.testTGForCustomer     = testTGForCustomer;
 window.syncCustomer          = syncCustomer;

@@ -69,19 +69,48 @@ async function syncCustomer(customer, opts = {}) {
     throw e;
   }
 
-  // Upsert each daily row using the customer's current three-mode pricing.
-  // request_count / domain_count are placeholders (kept at 0 until the
-  // upstream collection flow exposes them) — collection method is unchanged.
-  //   amount = traffic_fee + request_fee + domain_fee  (three-mode snapshot)
-  //   legacy `unit_price` column mirrors unit_price_traffic for back-compat.
+  // Try to fetch a current snapshot of registered-domain count. This is a
+  // once-per-sync value; we stamp it onto every day in the sync window so
+  // that MAX(domain_count) over any month gives the peak observed value.
+  // Only providers that expose fetchDomainCount participate; others get 0.
+  //
+  //   NOTE: request_count remains a placeholder (upstream doesn't expose
+  //   per-day request counts). It stays 0 until upstream provides it.
+  //
+  //   Billing model (X2): usage_records.amount holds ONLY the daily flow
+  //   fees (traffic_fee + request_fee). domain_fee is NOT part of amount —
+  //   it's billed per-month using MAX(domain_count) × domain_unit_price at
+  //   aggregation time (see stats.js).
+  let domainCount = 0;
+  let domainCountOk = false;
+  if (typeof driver.fetchDomainCount === 'function') {
+    try {
+      const n = await driver.fetchDomainCount({
+        apiKey:  customer.api_key,
+        apiUser: customer.api_user || undefined,
+        baseUrl: customer.api_base_url || undefined,
+        zoneIds: parseZoneIds(customer.zone_ids),
+      });
+      domainCount   = Number(n) || 0;
+      domainCountOk = true;
+    } catch (e) {
+      // Non-fatal: continue the traffic sync but log the reason.
+      domainCount = 0;
+      domainCountOk = false;
+      // eslint-disable-next-line no-console
+      console.warn(`[sync] fetchDomainCount(${customer.provider}) failed for "${customer.name}": ${e.message}`);
+    }
+  }
+
   const upsert = db.prepare(`
     INSERT INTO usage_records
       (customer_id, usage_date, traffic_gb, request_count, domain_count,
        unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
        traffic_fee, request_fee, domain_fee, amount, remark)
-    VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+    VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
     ON CONFLICT(customer_id, usage_date) DO UPDATE SET
       traffic_gb         = excluded.traffic_gb,
+      domain_count       = excluded.domain_count,
       unit_price         = excluded.unit_price,
       unit_price_traffic = excluded.unit_price_traffic,
       unit_price_request = excluded.unit_price_request,
@@ -147,10 +176,16 @@ async function syncCustomer(customer, opts = {}) {
     return adjDelta / anchorN;   // anchor month exists but every day is 0 -> even split within the month
   };
 
+  const domainTag = domainCountOk ? `,domains=${domainCount}` : '';
+
   const tx = db.transaction((items) => {
-    // Snapshot the customer's current three-mode pricing. request/domain
-    // counts are 0 today (upstream doesn't expose them yet), so only the
-    // traffic axis contributes to amount — but the schema is future-proof.
+    // Snapshot the customer's current three-mode pricing. request_count is
+    // still 0 (upstream lacks the endpoint); domain_count is stamped from
+    // the just-fetched snapshot onto every day, so MAX() over any month
+    // yields the peak observed value.
+    //
+    // amount holds ONLY the daily flow fees (traffic + request) — domain
+    // is billed at the monthly aggregate level using MAX(domain_count).
     const pT = Number(customer.unit_price_traffic || customer.unit_price || 0);
     const pR = Number(customer.unit_price_request || 0);
     const pD = Number(customer.unit_price_domain  || 0);
@@ -161,18 +196,18 @@ async function syncCustomer(customer, opts = {}) {
         : rawTraffic;
       const trafficR   = stats.round4(traffic);
       const trafficFee = stats.round2(trafficR * pT);
-      // request_count / domain_count are 0 today; keep the placeholder fees
-      // at 0 to match. When upstream starts returning counts, sync will
-      // pass them through here.
-      const amount = trafficFee; // request_fee + domain_fee are 0
+      // request_fee is 0 today (request_count is 0). domain_fee is NOT in
+      // amount — billed monthly by MAX(domain_count) × price.
+      const amount = trafficFee;
       upsert.run(
         customer.id,
         it.usage_date,
         trafficR,
+        domainCount,
         pT, pT, pR, pD,
         trafficFee,
         amount,
-        `auto:${customer.provider}${adjTag}`,
+        `auto:${customer.provider}${adjTag}${domainTag}`,
       );
       totalTraffic += trafficR;
     }

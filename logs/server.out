@@ -8,9 +8,3 @@
     LAN    : http://192.168.255.10:3000/
     API    : http://localhost:3000/api/customers
 
-[cron] alert check: {"checked":6,"alerted":5,"results":[{"customer":"防报毒","balance":-132.11,"threshold":500,"sent":false},{"customer":"APP下载1","balance":1231.3,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"sent":false},{"customer":"防报毒1","balance":-37284.4,"threshold":100,"sent":false},{"customer":"CN2","balance":-11.15,"threshold":100,"sent":false},{"customer":"YCN2测试客户","balance":0,"threshold":100,"sent":false}]}
-[cron] sync: 5 customers, results=4 ok
-[cron] alert check: {"checked":6,"alerted":0,"results":[{"customer":"防报毒","balance":-1290.34,"threshold":500,"skipped":"cooldown (180 min remaining)"},{"customer":"APP下载1","balance":869.08,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (180 min remaining)"},{"customer":"防报毒1","balance":-83614.35,"threshold":100,"skipped":"cooldown (180 min remaining)"},{"customer":"CN2","balance":-12.86,"threshold":100,"skipped":"cooldown (180 min remaining)"},{"customer":"YCN2测试客户","balance":0,"threshold":100,"skipped":"cooldown (180 min remaining)"}]}
-[cron] sync: 5 customers, results=4 ok
-[cron] alert check: {"checked":6,"alerted":0,"results":[{"customer":"防报毒","balance":-1291.77,"threshold":500,"skipped":"cooldown (120 min remaining)"},{"customer":"APP下载1","balance":868.54,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (120 min remaining)"},{"customer":"防报毒1","balance":-83671.39,"threshold":100,"skipped":"cooldown (120 min remaining)"},{"customer":"CN2","balance":-12.86,"threshold":100,"skipped":"cooldown (120 min remaining)"},{"customer":"YCN2测试客户","balance":0,"threshold":100,"skipped":"cooldown (120 min remaining)"}]}
-[cron] sync: 5 customers, results=4 ok

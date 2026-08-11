@@ -206,6 +206,41 @@ function chinaDateOf(unixMs) {
 }
 function round4(n) { return Math.round((n + Number.EPSILON) * 10000) / 10000; }
 
+/**
+ * Fetch the current number of registered domains for this account.
+ *
+ * Uses `GET /api/v1.0/domain/list?page=1&size=1000` and returns
+ * `data.length`. The `domain/limit` endpoint returns *remaining*
+ * quota, not the currently-registered count, so we don't use it here.
+ *
+ * @param {object} cfg
+ * @param {string} cfg.apiKey    Authorization key
+ * @param {string} [cfg.baseUrl] Override base URL
+ * @returns {Promise<number>}    current number of domains (0 on empty)
+ */
+async function fetchDomainCount(cfg) {
+  if (!cfg.apiKey) throw new Error('source1: api_key is required');
+  const baseUrl = normalizeBase(cfg.baseUrl || DEFAULT_BASE);
+  const url = `${baseUrl}/api/v1.0/domain/list?page=1&size=1000`;
+
+  const resp = await http.getJSON(url, {
+    headers: { Authorization: cfg.apiKey },
+    timeoutMs: 30000,
+  });
+
+  if (!resp || (resp.code !== 0 && resp.code !== 200 && resp.code !== '0' && resp.code !== '200')) {
+    const msg = resp ? `code=${resp.code}, msg=${resp.msg}` : 'empty response';
+    throw new Error(`source1 domain-list API error: ${msg}`);
+  }
+
+  const data = resp.data;
+  if (Array.isArray(data)) return data.length;
+  // Some deployments wrap the array in { list: [...], total: N }; be tolerant.
+  if (data && Array.isArray(data.list)) return data.list.length;
+  if (data && typeof data.total === 'number') return data.total;
+  return 0;
+}
+
 /** Split a [start,end] inclusive date range into <=maxDays sub-ranges. */
 function chunkDateRange(start, end, maxDays) {
   const out = [];
@@ -225,4 +260,4 @@ function toYmd(ms) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
 }
 
-module.exports = { fetchDailyTraffic, name: 'source1' };
+module.exports = { fetchDailyTraffic, fetchDomainCount, name: 'source1' };

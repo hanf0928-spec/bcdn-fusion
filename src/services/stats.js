@@ -69,21 +69,35 @@ function listSceneCosts(withStats = false) {
 
   if (!withStats) return rows;
 
-  // Aggregate lifetime metrics per (provider, scene) (one round-trip).
-  const aggMap = new Map();
-  const aggRows = db.prepare(`
-    SELECT c.provider                      AS provider,
-           c.scene                         AS scene,
-           COUNT(DISTINCT c.id)            AS customer_count,
-           COALESCE(SUM(u.traffic_gb), 0)  AS traffic_gb,
-           COALESCE(SUM(u.request_count), 0) AS request_count,
-           COALESCE(SUM(u.domain_count), 0)  AS domain_count,
-           COALESCE(SUM(u.amount),     0)  AS revenue
+  // Aggregate lifetime metrics per (provider, scene). Domain is MAX per
+  // customer (X2 policy), then SUMmed across customers of the same combo;
+  // traffic and request are pure SUM. Aggregation is done in JS because
+  // revenue = SUM(amount) + Σ(peakDomains × customer.unit_price_domain)
+  // depends on each customer's own domain price.
+  const perCust = db.prepare(`
+    SELECT c.id, c.provider, c.scene, c.unit_price_domain,
+           COALESCE(SUM(u.traffic_gb),0)    AS traffic,
+           COALESCE(SUM(u.request_count),0) AS requests,
+           COALESCE(MAX(u.domain_count),0)  AS domains,
+           COALESCE(SUM(u.amount),0)        AS amount
     FROM customers c
     LEFT JOIN usage_records u ON u.customer_id = c.id
-    GROUP BY c.provider, c.scene
+    GROUP BY c.id
   `).all();
-  for (const r of aggRows) aggMap.set(`${r.provider}|${r.scene}`, r);
+
+  const aggMap = new Map();
+  for (const r of perCust) {
+    const key = `${r.provider}|${r.scene}`;
+    if (!aggMap.has(key)) {
+      aggMap.set(key, { traffic: 0, requests: 0, domains: 0, amount: 0, domainRevenueFee: 0 });
+    }
+    const a = aggMap.get(key);
+    a.traffic  += Number(r.traffic  || 0);
+    a.requests += Number(r.requests || 0);
+    a.domains  += Number(r.domains  || 0);
+    a.amount   += Number(r.amount   || 0);
+    a.domainRevenueFee += Number(r.domains || 0) * Number(r.unit_price_domain || 0);
+  }
 
   // Customer count per (provider, scene), even when no usage exists yet.
   const cntRows = db.prepare(`
@@ -93,11 +107,12 @@ function listSceneCosts(withStats = false) {
 
   return rows.map(r => {
     const key = `${r.provider}|${r.scene}`;
-    const a = aggMap.get(key) || { traffic_gb: 0, request_count: 0, domain_count: 0, revenue: 0, customer_count: 0 };
-    const traffic  = Number(a.traffic_gb || 0);
-    const requests = Number(a.request_count || 0);
-    const domains  = Number(a.domain_count || 0);
-    const revenue  = Number(a.revenue || 0);
+    const a = aggMap.get(key) || { traffic: 0, requests: 0, domains: 0, amount: 0, domainRevenueFee: 0 };
+    const traffic  = Number(a.traffic || 0);
+    const requests = Number(a.requests || 0);
+    const domains  = Number(a.domains || 0);
+    // Revenue = SUM(amount) + Σ(peak × customer's own domain price).
+    const revenue  = Number(a.amount || 0) + Number(a.domainRevenueFee || 0);
     const platformCost = revenue * Number(r.platform_cost_ratio || 0);
     const trafficFee   = traffic  * Number(r.traffic_unit_price || 0);
     const requestFee   = requests * Number(r.request_unit_price || 0);
@@ -225,36 +240,105 @@ function listProviderSummaries(month) {
   `).all();
   const cntMap = new Map(cntRows.map(r => [`${r.provider}|${r.scene}`, r.n]));
 
-  // Lifetime aggregates.
-  const lifeRows = db.prepare(`
-    SELECT c.provider                      AS provider,
-           c.scene                         AS scene,
-           COALESCE(SUM(u.traffic_gb), 0)  AS traffic_gb,
-           COALESCE(SUM(u.request_count), 0) AS request_count,
-           COALESCE(SUM(u.domain_count), 0)  AS domain_count,
-           COALESCE(SUM(u.amount),     0)  AS revenue
-    FROM customers c
-    LEFT JOIN usage_records u ON u.customer_id = c.id
-    GROUP BY c.provider, c.scene
+  // Per-customer per-period aggregates. Domain is MAX (X2 policy), traffic
+  // and request are SUM. We aggregate in JS instead of SQL because each
+  // customer has its OWN domain price, so revenue = SUM(amount) + peakDomain
+  // × customer.unit_price_domain must be computed per-customer before
+  // rolling up to (provider, scene).
+  const allCustomers = db.prepare(`
+    SELECT id, provider, scene, unit_price_domain FROM customers
   `).all();
-  const lifeMap = new Map(lifeRows.map(r => [`${r.provider}|${r.scene}`, r]));
 
-  // "Current period" aggregates: month-scoped, or lifetime when isAll.
-  const monthRows = isAll
-    ? lifeRows
-    : db.prepare(`
-        SELECT c.provider                      AS provider,
-               c.scene                         AS scene,
-               COALESCE(SUM(u.traffic_gb), 0)  AS traffic_gb,
-               COALESCE(SUM(u.request_count), 0) AS request_count,
-               COALESCE(SUM(u.domain_count), 0)  AS domain_count,
-               COALESCE(SUM(u.amount),     0)  AS revenue
-        FROM customers c
-        LEFT JOIN usage_records u
-          ON u.customer_id = c.id AND substr(u.usage_date,1,7) = ?
-        GROUP BY c.provider, c.scene
-      `).all(m);
-  const monthMap = new Map(monthRows.map(r => [`${r.provider}|${r.scene}`, r]));
+  const perCust = new Map(); // customerId -> {life,{traffic,requests,domains,amount}, month{...}}
+  for (const c of allCustomers) {
+    perCust.set(c.id, {
+      provider: c.provider,
+      scene:    c.scene || 'download',
+      priceDomain: Number(c.unit_price_domain || 0),
+      life:  { traffic: 0, requests: 0, domains: 0, amount: 0 },
+      month: { traffic: 0, requests: 0, domains: 0, amount: 0 },
+    });
+  }
+
+  // Lifetime per-customer aggregate: domain = MAX, rest = SUM.
+  const lifePerCust = db.prepare(`
+    SELECT customer_id,
+           COALESCE(SUM(traffic_gb),0)    AS traffic,
+           COALESCE(SUM(request_count),0) AS requests,
+           COALESCE(MAX(domain_count),0)  AS domains,
+           COALESCE(SUM(amount),0)        AS amount
+    FROM usage_records
+    GROUP BY customer_id
+  `).all();
+  for (const r of lifePerCust) {
+    const p = perCust.get(r.customer_id);
+    if (!p) continue;
+    p.life = {
+      traffic:  Number(r.traffic || 0),
+      requests: Number(r.requests || 0),
+      domains:  Number(r.domains || 0),
+      amount:   Number(r.amount || 0),
+    };
+  }
+
+  // Month-scoped per-customer aggregate (skipped in 'all' mode).
+  if (!isAll) {
+    const monthPerCust = db.prepare(`
+      SELECT customer_id,
+             COALESCE(SUM(traffic_gb),0)    AS traffic,
+             COALESCE(SUM(request_count),0) AS requests,
+             COALESCE(MAX(domain_count),0)  AS domains,
+             COALESCE(SUM(amount),0)        AS amount
+      FROM usage_records
+      WHERE substr(usage_date,1,7) = ?
+      GROUP BY customer_id
+    `).all(m);
+    for (const r of monthPerCust) {
+      const p = perCust.get(r.customer_id);
+      if (!p) continue;
+      p.month = {
+        traffic:  Number(r.traffic || 0),
+        requests: Number(r.requests || 0),
+        domains:  Number(r.domains || 0),
+        amount:   Number(r.amount || 0),
+      };
+    }
+  }
+
+  // Roll up per-customer numbers to (provider, scene). Domain metrics from
+  // each customer are ADDED at this level (each customer contributes its
+  // own peak); revenue = SUM(amount) + SUM(customer.peakDomains × customer.priceDomain).
+  const lifeMap  = new Map();   // key -> { traffic, requests, domains, amount, domainRevenueFee }
+  const monthMap = new Map();
+  const ensure = (mp, key) => {
+    if (!mp.has(key)) mp.set(key, { traffic: 0, requests: 0, domains: 0, amount: 0, domainRevenueFee: 0 });
+    return mp.get(key);
+  };
+  for (const [, p] of perCust) {
+    const key = `${p.provider}|${p.scene}`;
+    const L = ensure(lifeMap, key);
+    L.traffic  += p.life.traffic;
+    L.requests += p.life.requests;
+    L.domains  += p.life.domains;
+    L.amount   += p.life.amount;
+    L.domainRevenueFee += p.life.domains * p.priceDomain;
+    if (isAll) {
+      // Month view mirrors lifetime when isAll.
+      const M = ensure(monthMap, key);
+      M.traffic  += p.life.traffic;
+      M.requests += p.life.requests;
+      M.domains  += p.life.domains;
+      M.amount   += p.life.amount;
+      M.domainRevenueFee += p.life.domains * p.priceDomain;
+    } else {
+      const M = ensure(monthMap, key);
+      M.traffic  += p.month.traffic;
+      M.requests += p.month.requests;
+      M.domains  += p.month.domains;
+      M.amount   += p.month.amount;
+      M.domainRevenueFee += p.month.domains * p.priceDomain;
+    }
+  }
 
   // Build the union of (provider, scene) from configured costs + customers.
   const combos = new Set();
@@ -266,19 +350,20 @@ function listProviderSummaries(month) {
     const [provider, scene] = key.split('|');
     const cost = resolveCost(cm, provider, scene);
 
-    const life  = lifeMap.get(key) || { traffic_gb: 0, request_count: 0, domain_count: 0, revenue: 0 };
-    const lifeTraffic  = Number(life.traffic_gb || 0);
-    const lifeRequests = Number(life.request_count || 0);
-    const lifeDomains  = Number(life.domain_count || 0);
-    const lifeRevenue  = Number(life.revenue || 0);
+    const life  = lifeMap.get(key) || { traffic: 0, requests: 0, domains: 0, amount: 0, domainRevenueFee: 0 };
+    const lifeTraffic  = Number(life.traffic || 0);
+    const lifeRequests = Number(life.requests || 0);
+    const lifeDomains  = Number(life.domains || 0);
+    // Revenue = SUM(amount) + Σ(customer peak_domains × customer domain_price)
+    const lifeRevenue  = Number(life.amount || 0) + Number(life.domainRevenueFee || 0);
     const lifePlatform = lifeRevenue * cost.platform;
     const lifeResource = lifeTraffic * cost.traffic + lifeRequests * cost.request + lifeDomains * cost.domain;
 
-    const mo = monthMap.get(key) || { traffic_gb: 0, request_count: 0, domain_count: 0, revenue: 0 };
-    const mTraffic  = Number(mo.traffic_gb || 0);
-    const mRequests = Number(mo.request_count || 0);
-    const mDomains  = Number(mo.domain_count || 0);
-    const mRevenue  = Number(mo.revenue || 0);
+    const mo = monthMap.get(key) || { traffic: 0, requests: 0, domains: 0, amount: 0, domainRevenueFee: 0 };
+    const mTraffic  = Number(mo.traffic || 0);
+    const mRequests = Number(mo.requests || 0);
+    const mDomains  = Number(mo.domains || 0);
+    const mRevenue  = Number(mo.amount || 0) + Number(mo.domainRevenueFee || 0);
     const mPlatform = mRevenue * cost.platform;
     const mResource = mTraffic * cost.traffic + mRequests * cost.request + mDomains * cost.domain;
 
@@ -332,48 +417,64 @@ function listProviderSummaries(month) {
  * Aggregated balance / billing helpers for ONE customer.
  *
  *   total_recharge   = SUM(recharges.amount)
- *   total_revenue    = SUM(usage_records.amount)
  *   total_traffic    = SUM(usage_records.traffic_gb)
- *   total_requests   = SUM(usage_records.request_count)
- *   total_domains    = SUM(usage_records.domain_count)
- *   total_platform   = total_revenue * scene_cost.platform_cost_ratio (% of revenue)
- *   total_resource   = total_traffic * traffic_unit_price
- *                    + total_requests * request_unit_price
- *                    + total_domains  * domain_unit_price
+ *   total_requests   = SUM(usage_records.request_count)     -- (0 today; placeholder)
+ *   total_domains    = MAX(usage_records.domain_count)      -- peak, per X2 policy
+ *   total_traffic_fee = total_traffic  * customer.unit_price_traffic  (already in amount)
+ *   total_request_fee = total_requests * customer.unit_price_request  (already in amount)
+ *   total_domain_fee  = total_domains  * customer.unit_price_domain   (NOT in amount)
+ *   total_revenue    = SUM(usage_records.amount) + total_domain_fee
+ *                    (amount holds traffic_fee + request_fee only; domain
+ *                     is peak-based so it's added at aggregation time)
+ *   total_platform   = total_revenue * scene_cost.platform_cost_ratio
+ *   total_resource   = total_traffic  * cost.traffic
+ *                    + total_requests * cost.request
+ *                    + total_domains  * cost.domain           -- also peak-based
  *   total_profit     = total_revenue - total_platform - total_resource
  *   balance          = total_recharge - total_revenue
  */
 function getCustomerStats(customerId, costMap) {
   const cm = costMap || buildCostMap();
-  const c = db.prepare(`SELECT id, provider, scene FROM customers WHERE id = ?`).get(customerId);
+  const c = db.prepare(`SELECT id, provider, scene, unit_price, unit_price_traffic, unit_price_request, unit_price_domain FROM customers WHERE id = ?`).get(customerId);
   const provider = c ? c.provider : null;
   const scene    = c ? (c.scene || 'download') : 'download';
   const cost = resolveCost(cm, provider, scene);
+
+  // Customer's own domain price (revenue side). Distinct from cost.domain.
+  const priceDomain = c ? Number(c.unit_price_domain || 0) : 0;
 
   const r = db.prepare(`
     SELECT COALESCE(SUM(amount),0) AS total
     FROM recharges WHERE customer_id = ?
   `).get(customerId);
 
+  // NOTE: domain_count is MAX (peak), not SUM — see X2 policy above.
   const u = db.prepare(`
-    SELECT COALESCE(SUM(amount),0)        AS revenue,
+    SELECT COALESCE(SUM(amount),0)        AS amount_sum,
            COALESCE(SUM(traffic_gb),0)    AS traffic,
            COALESCE(SUM(request_count),0) AS requests,
-           COALESCE(SUM(domain_count),0)  AS domains
+           COALESCE(MAX(domain_count),0)  AS domains
     FROM usage_records WHERE customer_id = ?
   `).get(customerId);
 
   const totalRecharge = round2(r.total);
-  const totalRevenue  = round2(u.revenue);
   const totalTraffic  = round4(u.traffic);
   const totalRequests = round2(u.requests);
   const totalDomains  = round2(u.domains);
-  const totalResource = round2(totalTraffic * cost.traffic
-                             + totalRequests * cost.request
-                             + totalDomains  * cost.domain);
-  const totalPlatform = round2(totalRevenue * cost.platform);   // % of revenue
-  const totalProfit   = round2(totalRevenue - totalPlatform - totalResource);
-  const balance       = round2(totalRecharge - totalRevenue);
+
+  // Revenue: amount already includes traffic_fee + request_fee. Add the
+  // peak-based domain_fee at the customer's own domain price.
+  const totalDomainRevenueFee = round2(totalDomains * priceDomain);
+  const totalRevenue = round2(Number(u.amount_sum || 0) + totalDomainRevenueFee);
+
+  // Cost side (three-mode).
+  const totalTrafficCost  = round2(totalTraffic  * cost.traffic);
+  const totalRequestCost  = round2(totalRequests * cost.request);
+  const totalDomainCost   = round2(totalDomains  * cost.domain);
+  const totalResource     = round2(totalTrafficCost + totalRequestCost + totalDomainCost);
+  const totalPlatform     = round2(totalRevenue * cost.platform);   // % of revenue
+  const totalProfit       = round2(totalRevenue - totalPlatform - totalResource);
+  const balance           = round2(totalRecharge - totalRevenue);
 
   return {
     totalRecharge,
@@ -383,9 +484,13 @@ function getCustomerStats(customerId, costMap) {
     totalRequests,
     totalDomains,
     totalPlatformCost: totalPlatform,
-    totalTrafficFee:   round2(totalTraffic * cost.traffic),
-    totalRequestFee:   round2(totalRequests * cost.request),
-    totalDomainFee:    round2(totalDomains * cost.domain),
+    // Cost-side fee decomposition (matches resource-cost formula).
+    totalTrafficFee:   totalTrafficCost,
+    totalRequestFee:   totalRequestCost,
+    totalDomainFee:    totalDomainCost,
+    // Revenue-side domain fee (customer price × peak domains), kept
+    // separately so the UI can surface it alongside SUM(amount).
+    totalDomainRevenueFee,
     totalResourceCost: totalResource,
     totalGrossProfit:  totalProfit,
     balance,
@@ -394,17 +499,24 @@ function getCustomerStats(customerId, costMap) {
 
 /**
  * Monthly traffic / billing breakdown for a customer.
+ *
+ * Per X2 policy:
+ *   - traffic_gb / request_count are SUMmed daily (flow metrics).
+ *   - domain_count is MAX per month (peak snapshot).
+ *   - amount stored on each row = traffic_fee + request_fee (no domain).
+ *   - revenue = SUM(amount) + MAX(domain_count) * customer.unit_price_domain.
  */
 function getCustomerMonthlyUsage(customerId, month, costMap) {
   const cm = costMap || buildCostMap();
-  const c = db.prepare(`SELECT provider, scene FROM customers WHERE id = ?`).get(customerId);
+  const c = db.prepare(`SELECT provider, scene, unit_price_domain FROM customers WHERE id = ?`).get(customerId);
   const cost = resolveCost(cm, c && c.provider, c && (c.scene || 'download'));
+  const priceDomain = c ? Number(c.unit_price_domain || 0) : 0;
 
   let sql = `
     SELECT substr(usage_date, 1, 7)  AS month,
            ROUND(SUM(traffic_gb), 4) AS traffic_gb,
            ROUND(SUM(request_count), 2) AS request_count,
-           ROUND(SUM(domain_count), 2)  AS domain_count,
+           ROUND(MAX(domain_count), 2)  AS domain_count,
            ROUND(SUM(amount),     2) AS amount,
            COUNT(*)                  AS days
     FROM usage_records
@@ -419,19 +531,24 @@ function getCustomerMonthlyUsage(customerId, month, costMap) {
     const traffic  = Number(r.traffic_gb || 0);
     const requests = Number(r.request_count || 0);
     const domains  = Number(r.domain_count || 0);
-    const revenue  = Number(r.amount || 0);
+    const amount   = Number(r.amount || 0);          // traffic+request fees only
+    // Revenue-side domain fee: peak domains × customer's own domain price.
+    const domainRevenueFee = round2(domains * priceDomain);
+    const revenue  = round2(amount + domainRevenueFee);
+    // Cost-side per-axis fees.
     const trafficFee = round2(traffic * cost.traffic);
     const requestFee = round2(requests * cost.request);
     const domainFee  = round2(domains * cost.domain);
-    const resource = trafficFee + requestFee + domainFee;
-    const platform = round2(revenue * cost.platform);
+    const resource   = trafficFee + requestFee + domainFee;
+    const platform   = round2(revenue * cost.platform);
     return {
       month:         r.month,
       traffic_gb:    round4(traffic),
       request_count: round2(requests),
-      domain_count:  round2(domains),
-      amount:        round2(revenue),     // legacy
-      revenue:       round2(revenue),
+      domain_count:  round2(domains),         // MAX for the month
+      amount:        round2(amount),          // legacy: traffic_fee+request_fee only
+      revenue:       revenue,                 // includes monthly domain fee
+      domain_revenue_fee: domainRevenueFee,   // surfaced for UI transparency
       platform_cost: platform,
       traffic_fee:   trafficFee,
       request_fee:   requestFee,
@@ -453,10 +570,11 @@ function listCustomersWithStats(month) {
   const customers = db.prepare(`SELECT * FROM customers ORDER BY id ASC`).all();
   const cm = buildCostMap();
 
+  // NOTE: domain_count is MAX (peak per month, X2 policy); traffic/request are SUM.
   const monthRow = db.prepare(`
     SELECT COALESCE(SUM(traffic_gb),0)     AS traffic_gb,
            COALESCE(SUM(request_count),0)  AS request_count,
-           COALESCE(SUM(domain_count),0)   AS domain_count,
+           COALESCE(MAX(domain_count),0)   AS domain_count,
            COALESCE(SUM(amount),0)         AS amount
     FROM usage_records
     WHERE customer_id = ? AND substr(usage_date,1,7) = ?
@@ -465,6 +583,8 @@ function listCustomersWithStats(month) {
   return customers.map(c => {
     const s = getCustomerStats(c.id, cm);
     const cost = resolveCost(cm, c.provider, c.scene || 'download');
+    // Customer's own domain price (revenue side).
+    const priceDomain = Number(c.unit_price_domain || 0);
 
     let monthTraffic, monthRequests, monthDomains, monthRevenue,
         monthResource, monthPlatform, monthProfit;
@@ -482,12 +602,17 @@ function listCustomersWithStats(month) {
       monthTraffic   = Number(mr.traffic_gb || 0);
       monthRequests  = Number(mr.request_count || 0);
       monthDomains   = Number(mr.domain_count || 0);
-      monthRevenue   = round2(mr.amount);
-      monthResource  = round2(monthTraffic * cost.traffic
-                           + monthRequests * cost.request
-                           + monthDomains  * cost.domain);
-      monthPlatform  = round2(monthRevenue * cost.platform);
-      monthProfit    = round2(monthRevenue - monthPlatform - monthResource);
+      // amount holds traffic_fee + request_fee only; add domain revenue at
+      // customer's own domain price using peak domains.
+      const amountSum         = Number(mr.amount || 0);
+      const domainRevenueFee  = round2(monthDomains * priceDomain);
+      monthRevenue    = round2(amountSum + domainRevenueFee);
+      // Cost side (three-mode).
+      monthResource   = round2(monthTraffic * cost.traffic
+                            + monthRequests * cost.request
+                            + monthDomains  * cost.domain);
+      monthPlatform   = round2(monthRevenue * cost.platform);
+      monthProfit     = round2(monthRevenue - monthPlatform - monthResource);
     }
 
     return {
@@ -538,17 +663,21 @@ function nowYearMonth() {
 
 /**
  * Re-stamp every `usage_records` row of the given customer (or all
- * customers when `customerId` is null) so that `unit_price` and
- * `amount` match the customer's *current* `unit_price`.
+ * customers when `customerId` is null) so that the three per-row price
+ * snapshots and per-axis fees match the customer's *current* pricing.
+ *
+ * Per X2 policy:
+ *   amount = traffic_fee + request_fee     (domain_fee NOT included)
+ *   domain is billed monthly at MAX(domain_count) × price at aggregation time.
+ *
+ *   domain_fee column is still stamped per-row for auditability, even
+ *   though it doesn't feed into `amount`.
  */
 function recomputeUsageAmounts(customerId = null) {
   const customers = customerId
     ? db.prepare(`SELECT id, unit_price, unit_price_traffic, unit_price_request, unit_price_domain FROM customers WHERE id = ?`).all(customerId)
     : db.prepare(`SELECT id, unit_price, unit_price_traffic, unit_price_request, unit_price_domain FROM customers`).all();
 
-  // For each usage row of this customer, re-stamp the three price snapshots,
-  // compute each fee, and store the SUM in the legacy `amount` column so any
-  // existing consumer (`SUM(amount) AS revenue`) keeps working unchanged.
   const upd = db.prepare(`
     UPDATE usage_records
     SET unit_price_traffic = ?,
@@ -558,7 +687,7 @@ function recomputeUsageAmounts(customerId = null) {
         traffic_fee        = ROUND(traffic_gb    * ?, 2),
         request_fee        = ROUND(request_count * ?, 2),
         domain_fee         = ROUND(domain_count  * ?, 2),
-        amount             = ROUND(traffic_gb * ? + request_count * ? + domain_count * ?, 2)
+        amount             = ROUND(traffic_gb * ? + request_count * ?, 2)
     WHERE customer_id = ?
   `);
 
@@ -568,7 +697,7 @@ function recomputeUsageAmounts(customerId = null) {
       const pT = Number(c.unit_price_traffic || 0);
       const pR = Number(c.unit_price_request || 0);
       const pD = Number(c.unit_price_domain  || 0);
-      const r = upd.run(pT, pR, pD, pT, pT, pR, pD, pT, pR, pD, c.id);
+      const r = upd.run(pT, pR, pD, pT, pT, pR, pD, pT, pR, c.id);
       totalRows += r.changes;
     }
   });

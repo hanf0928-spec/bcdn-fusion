@@ -318,9 +318,26 @@ router.put('/customers/:id', (req, res) => {
 // Delete
 router.delete('/customers/:id', (req, res) => {
   const id = num(req.params.id);
-  const r = db.prepare(`DELETE FROM customers WHERE id = ?`).run(id);
-  if (!r.changes) return fail(res, 404, 'customer not found');
-  ok(res, { id });
+  // Run the delete inside a transaction so the parent row and all its
+  // ON DELETE CASCADE children (usage_records / recharges / alert_logs /
+  // sync_logs) are removed atomically.
+  let result;
+  try {
+    result = db.transaction(() => {
+      const before = db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM usage_records WHERE customer_id = ?) AS usage,
+          (SELECT COUNT(*) FROM recharges     WHERE customer_id = ?) AS recharges
+      `).get(id, id);
+      const r = db.prepare(`DELETE FROM customers WHERE id = ?`).run(id);
+      if (!r.changes) return { found: false, usage: 0, recharges: 0 };
+      return { found: true, usage: before.usage, recharges: before.recharges };
+    })();
+  } catch (e) {
+    return fail(res, 500, e.message);
+  }
+  if (!result.found) return fail(res, 404, 'customer not found');
+  ok(res, { id, deleted_usage_records: result.usage, deleted_recharges: result.recharges });
 });
 
 // Recompute usage_records.amount for ONE customer using current unit_price
@@ -476,7 +493,10 @@ router.post('/customers/:id/usage', (req, res) => {
   const trafficFee = stats.round2(traffic_gb    * pT);
   const requestFee = stats.round2(request_count * pR);
   const domainFee  = stats.round2(domain_count  * pD);
-  const amount     = stats.round2(trafficFee + requestFee + domainFee);
+  // Per X2 policy: amount holds daily flow fees only. domain_fee is stamped
+  // for per-row auditability but excluded from amount; monthly billing uses
+  // MAX(domain_count) × domain price at aggregation time.
+  const amount     = stats.round2(trafficFee + requestFee);
 
   // Upsert by (customer_id, usage_date)
   db.prepare(`
