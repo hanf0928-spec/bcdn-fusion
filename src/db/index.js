@@ -29,7 +29,7 @@ function init() {
       name            TEXT    NOT NULL UNIQUE,
       contact         TEXT,
       remark          TEXT,
-      -- Provider: 'source1' (built-in CDN) | 'source2' (cdnetworks media-live-vod) | 'eo' (Tencent EdgeOne) | 'ycn2' (YCN2 CDN)
+      -- Provider: 'source1' (built-in CDN) | 'source2' (cdnetworks media-live-vod) | 'eo' (Tencent EdgeOne)
       provider        TEXT    NOT NULL DEFAULT 'source1',
       -- Business scenario (business dimension): 'download' | 'vod' | 'cn2'
       -- Defaults to 'download' when not otherwise specified.
@@ -224,7 +224,7 @@ function init() {
     INSERT OR IGNORE INTO scene_costs (provider, scene, platform_cost_ratio, traffic_unit_price, request_unit_price, domain_unit_price)
     VALUES (?, ?, 0, 0, 0, 0)
   `);
-  for (const p of ['source1', 'source2', 'eo', 'ycn2']) {
+  for (const p of ['source1', 'source2', 'eo']) {
     for (const s of ['download', 'vod', 'cn2']) seedSceneCost.run(p, s);
   }
 }

@@ -21,7 +21,6 @@ get **Telegram group alerts** when balance drops below threshold.
     HMAC-SHA1 signed Basic auth (needs **username + apiKey**);
     docs in [`data/md/CDN1.pdf`](data/md/CDN1.pdf)
   - `eo` — Tencent Cloud EdgeOne
-  - `ycn2` — YCN2 CDN Platform (API Key authentication)
 - **Top tab bar UI** — `Overview` (totals across all customers) plus one
   tab per customer, each with its own page (sub-tabs: Overview / Usage /
   Recharges / Alerts).
@@ -170,8 +169,7 @@ curl -X POST http://localhost:3000/api/alerts/check -H 'x-admin-token: ...'
     │       ├── http.js        # tiny HTTPS helper
     │       ├── source1.js     # /api/v1.0/domain/domain-statistics
     │       ├── source2.js     # CDNetworks usage2
-    │       ├── eo.js          # Tencent Cloud EdgeOne
-    │       └── ycn2.js        # YCN2 CDN Platform
+    │       └── eo.js          # Tencent Cloud EdgeOne
     └── scripts/
         ├── init-db.js
         └── seed.js            # demo customers (with the user's API keys)
