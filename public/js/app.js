@@ -451,7 +451,7 @@ async function renderCustomerPage(el, id) {
     ? `<span class="text-emerald-600">${fmt.esc(c.last_sync_at)}</span>`
     : `<span class="text-slate-400">从未同步</span>`;
   const apiKeyShown = c.has_api_key
-    ? `<span class="font-mono text-slate-600">${fmt.esc(c.api_key_masked)}</span>${c.has_api_key2 ? ' <span class="badge badge-slate ml-1" title="已配置双 API Key（YCDN 备用）">🔑×2</span>' : ''}`
+    ? `<span class="font-mono text-slate-600">${fmt.esc(c.api_key_masked)}</span>${c.has_api_key2 ? ' <span class="badge badge-slate ml-1" title="已配置双 API Key（CCDN 备用）">🔑×2</span>' : ''}`
     : `<span class="text-rose-600">未配置</span>`;
 
   el.innerHTML = `
@@ -864,14 +864,14 @@ function syncProviderFieldsVisibility() {
   if (!form) return;
   const provider = form.provider && form.provider.value;
   const isEO   = provider === 'eo';
-  const isYcdn = provider === 'source1';
+  const isCcdn = provider === 'source2';
   const rowZone = document.getElementById('row-zone-ids');
   if (rowZone) rowZone.classList.toggle('hidden', !isEO);
-  // Secondary API key is a YCDN-only capability. Hide the row for other
+  // Secondary API key is a CCDN-only capability. Hide the row for other
   // providers so operators don't accidentally fill it (the backend would
   // store it, but sync wouldn't consume it).
   const rowKey2 = document.getElementById('row-api-key2');
-  if (rowKey2) rowKey2.classList.toggle('hidden', !isYcdn);
+  if (rowKey2) rowKey2.classList.toggle('hidden', !isCcdn);
 }
 
 // Toggle provider-specific fields whenever the operator switches providers.
@@ -926,11 +926,11 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
   // For update, only send api_key if user typed a new value
   if (!editing || apiKeyVal) payload.api_key = apiKeyVal || null;
 
-  // Secondary API key (YCDN-only). Sent only when the user actually types
+  // Secondary API key (CCDN-only). Sent only when the user actually types
   // something. Sentinel: a single '-' means "clear the stored value" so
   // operators can drop the backup key without exposing the primary one.
   const apiKey2Field = f.api_key2;
-  if (apiKey2Field && f.provider.value === 'source1') {
+  if (apiKey2Field && f.provider.value === 'source2') {
     const raw2 = (apiKey2Field.value || '').trim();
     if (raw2 === '-') payload.api_key2 = null;
     else if (raw2) payload.api_key2 = raw2;

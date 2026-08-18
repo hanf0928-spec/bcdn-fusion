@@ -156,7 +156,7 @@ function init() {
   // -------- lightweight migrations for older DBs --------
   ensureColumn('customers', 'provider',     `TEXT NOT NULL DEFAULT 'source1'`);
   ensureColumn('customers', 'api_key',      `TEXT`);
-  // Optional secondary API key. Only consumed by YCDN (source1) sync driver:
+  // Optional secondary API key. Only consumed by CCDN (source2) sync driver:
   // when present, sync pulls with both keys and merges results (traffic +
   // request added, domain taken as MAX). Other providers ignore this field.
   ensureColumn('customers', 'api_key2',     `TEXT`);

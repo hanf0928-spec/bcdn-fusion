@@ -56,7 +56,7 @@ function shapeCustomer(c) {
   out.api_key_masked = maskKey(c.api_key);
   out.has_api_key = !!c.api_key;
   delete out.api_key;
-  // Secondary key (YCDN only). Mirror the same masked/has-flag pattern so
+  // Secondary key (CCDN only). Mirror the same masked/has-flag pattern so
   // the UI can render/edit it independently without ever seeing plaintext.
   out.api_key2_masked = maskKey(c.api_key2);
   out.has_api_key2 = !!c.api_key2;
@@ -175,7 +175,7 @@ router.post('/customers', (req, res) => {
       provider || 'source1',
       (scene && ['download', 'vod', 'cn2'].includes(scene)) ? scene : 'download',
       api_key || null,
-      // api_key2 is optional & YCDN-only, but we store it regardless of
+      // api_key2 is optional & CCDN-only, but we store it regardless of
       // provider so switching providers back and forth doesn't lose the value.
       (api_key2 && String(api_key2).trim()) ? String(api_key2).trim() : null,
       api_user || null,
@@ -223,7 +223,7 @@ router.put('/customers/:id', (req, res) => {
   if (api_key === null) nextApiKey = null;
   else if (typeof api_key === 'string' && api_key.trim() !== '') nextApiKey = api_key.trim();
 
-  // Same pattern for api_key2 (optional secondary key, YCDN-only usage).
+  // Same pattern for api_key2 (optional secondary key, CCDN-only usage).
   let nextApiKey2 = c.api_key2;
   if (api_key2 === null) nextApiKey2 = null;
   else if (typeof api_key2 === 'string' && api_key2.trim() !== '') nextApiKey2 = api_key2.trim();

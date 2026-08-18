@@ -53,7 +53,7 @@ async function syncCustomer(customer, opts = {}) {
   const endDate   = opts.endDate   || today();
 
   // ---- Fetch daily traffic --------------------------------------------
-  // YCDN (source1) can carry a secondary api_key2. When present, we pull
+  // CCDN (source2) can carry a secondary api_key2. When present, we pull
   // with both keys, sum traffic_gb / request_count per (usage_date), and
   // pick the MAX for domain_count-style snapshots later.
   //
@@ -61,9 +61,9 @@ async function syncCustomer(customer, opts = {}) {
   // returns data, we proceed with the merged result; only when EVERY key
   // errors do we surface the failure. Per-key failures are recorded into
   // the sync_logs message so the operator can still diagnose them.
-  const isYcdn = (customer.provider || 'source1') === 'source1';
+  const isCcdn = (customer.provider || 'source1') === 'source2';
   const keys = [customer.api_key];
-  if (isYcdn && customer.api_key2 && String(customer.api_key2).trim()) {
+  if (isCcdn && customer.api_key2 && String(customer.api_key2).trim()) {
     keys.push(String(customer.api_key2).trim());
   }
 
