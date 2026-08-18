@@ -142,7 +142,7 @@ router.get('/customers/:id', (req, res) => {
 router.post('/customers', (req, res) => {
   const {
     name, contact, remark,
-    provider, api_key, api_key2, api_user, api_base_url, zone_ids,
+    provider, api_key, api_key2, api_user, api_user2, api_base_url, zone_ids,
     unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
     alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
@@ -163,11 +163,11 @@ router.post('/customers', (req, res) => {
   try {
     const r = db.prepare(`
       INSERT INTO customers
-        (name, contact, remark, provider, scene, api_key, api_key2, api_user, api_base_url, zone_ids,
+        (name, contact, remark, provider, scene, api_key, api_key2, api_user, api_user2, api_base_url, zone_ids,
          unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
          alert_threshold, tg_chat_id, status,
          traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       String(name).trim(),
       contact || null,
@@ -179,6 +179,9 @@ router.post('/customers', (req, res) => {
       // provider so switching providers back and forth doesn't lose the value.
       (api_key2 && String(api_key2).trim()) ? String(api_key2).trim() : null,
       api_user || null,
+      // api_user2 pairs with api_key2 for CCDN. Optional; sync falls back
+      // to api_user when this is empty.
+      (api_user2 && String(api_user2).trim()) ? String(api_user2).trim() : null,
       api_base_url || null,
       normalizeZoneIdsForStorage(zone_ids),
       priceTraffic,       // legacy unit_price mirror
@@ -207,7 +210,7 @@ router.put('/customers/:id', (req, res) => {
 
   const {
     name, contact, remark,
-    provider, api_key, api_key2, api_user, api_base_url, zone_ids,
+    provider, api_key, api_key2, api_user, api_user2, api_base_url, zone_ids,
     unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
     alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
@@ -230,6 +233,9 @@ router.put('/customers/:id', (req, res) => {
 
   // api_user is not sensitive — empty string clears, undefined keeps.
   const nextApiUser = (api_user === undefined) ? c.api_user : (api_user || null);
+  // api_user2 follows the same rule as api_user (not sensitive, undefined
+  // keeps, empty/null clears). Sync falls back to api_user at runtime.
+  const nextApiUser2 = (api_user2 === undefined) ? c.api_user2 : (api_user2 || null);
 
   // zone_ids: undefined keeps current; empty/null/[] clears; else normalise.
   const nextZoneIds = (zone_ids === undefined)
@@ -278,6 +284,7 @@ router.put('/customers/:id', (req, res) => {
       api_key = ?,
       api_key2 = ?,
       api_user = ?,
+      api_user2 = ?,
       api_base_url = ?,
       zone_ids = ?,
       unit_price = ?,
@@ -301,6 +308,7 @@ router.put('/customers/:id', (req, res) => {
     nextApiKey,
     nextApiKey2,
     nextApiUser,
+    nextApiUser2,
     (api_base_url === undefined) ? c.api_base_url : (api_base_url || null),
     nextZoneIds,
     nextPriceTraffic,   // legacy unit_price mirror

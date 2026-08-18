@@ -61,20 +61,33 @@ async function syncCustomer(customer, opts = {}) {
   // returns data, we proceed with the merged result; only when EVERY key
   // errors do we surface the failure. Per-key failures are recorded into
   // the sync_logs message so the operator can still diagnose them.
+  //
+  // CCDN requires (apiKey, apiUser) tuples — each key ships paired with
+  // its own user. We fall back to the primary api_user when api_user2 is
+  // absent, so a legacy row that only set api_key2 still works.
   const isCcdn = (customer.provider || 'source1') === 'source2';
-  const keys = [customer.api_key];
+  const creds = [{
+    apiKey:  customer.api_key,
+    apiUser: customer.api_user || undefined,
+  }];
   if (isCcdn && customer.api_key2 && String(customer.api_key2).trim()) {
-    keys.push(String(customer.api_key2).trim());
+    const u2 = (customer.api_user2 && String(customer.api_user2).trim())
+      ? String(customer.api_user2).trim()
+      : (customer.api_user || undefined);
+    creds.push({
+      apiKey:  String(customer.api_key2).trim(),
+      apiUser: u2,
+    });
   }
 
   let rows;
   const keyErrors = [];         // failures encountered across all keys
   const keySucc   = [];         // 1-based indexes of keys that returned rows
   try {
-    if (keys.length === 1) {
+    if (creds.length === 1) {
       rows = await driver.fetchDailyTraffic({
-        apiKey:   keys[0],
-        apiUser:  customer.api_user || undefined,
+        apiKey:   creds[0].apiKey,
+        apiUser:  creds[0].apiUser,
         baseUrl:  customer.api_base_url || undefined,
         zoneIds:  parseZoneIds(customer.zone_ids),
         startDate,
@@ -85,11 +98,11 @@ async function syncCustomer(customer, opts = {}) {
       // Merge daily rows by usage_date. traffic_gb and request_count sum;
       // any per-day flag we can't merge is dropped. Order restored by date.
       const merged = new Map(); // usage_date -> { traffic_gb, request_count }
-      for (let i = 0; i < keys.length; i++) {
+      for (let i = 0; i < creds.length; i++) {
         try {
           const partial = await driver.fetchDailyTraffic({
-            apiKey:   keys[i],
-            apiUser:  customer.api_user || undefined,
+            apiKey:   creds[i].apiKey,
+            apiUser:  creds[i].apiUser,
             baseUrl:  customer.api_base_url || undefined,
             zoneIds:  parseZoneIds(customer.zone_ids),
             startDate,
@@ -136,11 +149,11 @@ async function syncCustomer(customer, opts = {}) {
   let domainCountOk = false;
   if (typeof driver.fetchDomainCount === 'function') {
     const partialCounts = [];
-    for (let i = 0; i < keys.length; i++) {
+    for (let i = 0; i < creds.length; i++) {
       try {
         const n = await driver.fetchDomainCount({
-          apiKey:  keys[i],
-          apiUser: customer.api_user || undefined,
+          apiKey:  creds[i].apiKey,
+          apiUser: creds[i].apiUser,
           baseUrl: customer.api_base_url || undefined,
           zoneIds: parseZoneIds(customer.zone_ids),
         });
@@ -288,8 +301,8 @@ async function syncCustomer(customer, opts = {}) {
   // Multi-key trace: only surface when >1 key is configured so the common
   // single-key case keeps its short log line.
   const keyMsgParts = [];
-  if (keys.length > 1) {
-    keyMsgParts.push(`keys=${keySucc.length}/${keys.length}`);
+  if (creds.length > 1) {
+    keyMsgParts.push(`keys=${keySucc.length}/${creds.length}`);
     if (keyErrors.length) keyMsgParts.push(keyErrors.join(' | '));
   }
   const suffixBits = [];

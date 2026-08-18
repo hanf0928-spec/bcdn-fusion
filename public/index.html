@@ -133,6 +133,14 @@
           <input name="api_user" placeholder="例如 you@example.com 或 SecretId" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono" />
         </div>
 
+        <div id="row-api-user2" class="hidden">
+          <label class="block text-xs font-medium text-slate-600 mb-1">
+            备用 API 用户名
+            <span class="text-slate-400 font-normal">（可选，与备用 API Key 配对使用；留空则复用主 API 用户名）</span>
+          </label>
+          <input name="api_user2" placeholder="备用账号名（留空 = 复用主账号）" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono" />
+        </div>
+
         <div id="row-zone-ids" class="hidden">
           <label class="block text-xs font-medium text-slate-600 mb-1">
             Zone IDs <span class="text-slate-400 font-normal">（仅 EO 使用，多个逗号/空格分隔；留空默认 *，查询账号下全部站点）

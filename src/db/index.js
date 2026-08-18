@@ -161,6 +161,11 @@ function init() {
   // request added, domain taken as MAX). Other providers ignore this field.
   ensureColumn('customers', 'api_key2',     `TEXT`);
   ensureColumn('customers', 'api_user',     `TEXT`);
+  // Optional secondary API user, paired with api_key2. CCDN requires
+  // (apiKey, apiUser) tuples, so each key has its own user; sync passes
+  // (api_key, api_user) for the primary call and (api_key2, api_user2)
+  // for the secondary. Falls back to api_user when api_user2 is null.
+  ensureColumn('customers', 'api_user2',    `TEXT`);
   ensureColumn('customers', 'api_base_url', `TEXT`);
   ensureColumn('customers', 'last_sync_at', `TEXT`);
   // Business scenario dimension (download | vod | cn2).

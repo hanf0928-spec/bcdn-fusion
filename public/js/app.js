@@ -569,7 +569,7 @@ function renderDetailOverview(el) {
         <dl class="text-sm space-y-2">
           <div class="flex justify-between"><dt class="text-slate-500">融合平台</dt><dd>${fmt.esc(PROVIDER_LABEL[c.provider] || c.provider)}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">业务场景</dt><dd>${fmt.esc(SCENE_LABEL[c.scene] || c.scene || '下载')}</dd></div>
-          <div class="flex justify-between"><dt class="text-slate-500">API 用户名</dt><dd class="font-mono text-xs">${fmt.esc(c.api_user || '（无）')}</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">API 用户名</dt><dd class="font-mono text-xs">${fmt.esc(c.api_user || '（无）')}${c.api_user2 ? ` <span class="text-slate-400">/ 备用：${fmt.esc(c.api_user2)}</span>` : ''}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">API 基础地址</dt><dd class="font-mono text-xs text-right break-all">${fmt.esc(c.api_base_url || '（默认）')}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">状态</dt><dd>${c.status === 'active' ? '启用' : '停用'}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">客户单价</dt><dd class="num text-right text-xs">
@@ -806,6 +806,7 @@ function openCustomerModal(id) {
       form.provider.value     = c.provider || 'source1';
       if (form.scene) form.scene.value = c.scene || 'download';
       form.api_user.value     = c.api_user || '';
+      if (form.api_user2) form.api_user2.value = c.api_user2 || '';
       form.api_base_url.value = c.api_base_url || '';
       // zone_ids comes back as an array (or null) from the API.
       if (form.zone_ids) {
@@ -867,11 +868,13 @@ function syncProviderFieldsVisibility() {
   const isCcdn = provider === 'source2';
   const rowZone = document.getElementById('row-zone-ids');
   if (rowZone) rowZone.classList.toggle('hidden', !isEO);
-  // Secondary API key is a CCDN-only capability. Hide the row for other
-  // providers so operators don't accidentally fill it (the backend would
-  // store it, but sync wouldn't consume it).
+  // Secondary API key/user are CCDN-only capabilities. Hide the rows for
+  // other providers so operators don't accidentally fill them (the backend
+  // would store them, but sync wouldn't consume them).
   const rowKey2 = document.getElementById('row-api-key2');
   if (rowKey2) rowKey2.classList.toggle('hidden', !isCcdn);
+  const rowUser2 = document.getElementById('row-api-user2');
+  if (rowUser2) rowUser2.classList.toggle('hidden', !isCcdn);
 }
 
 // Toggle provider-specific fields whenever the operator switches providers.
@@ -905,6 +908,12 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
     provider: f.provider.value,
     scene: (f.scene && f.scene.value) || 'download',
     api_user: f.api_user.value.trim() || null,
+    // Secondary api_user pairs with api_key2. Send only when the CCDN row
+    // is visible; otherwise we would risk overwriting to null on other
+    // providers. Empty string → null (clear); non-empty → trimmed value.
+    ...(f.provider.value === 'source2' && f.api_user2
+      ? { api_user2: (f.api_user2.value || '').trim() || null }
+      : {}),
     api_base_url: f.api_base_url.value.trim() || null,
     unit_price:         priceTrafficGb,   // legacy alias for back-compat
     unit_price_traffic: priceTrafficGb,
