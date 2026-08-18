@@ -56,6 +56,11 @@ function shapeCustomer(c) {
   out.api_key_masked = maskKey(c.api_key);
   out.has_api_key = !!c.api_key;
   delete out.api_key;
+  // Secondary key (YCDN only). Mirror the same masked/has-flag pattern so
+  // the UI can render/edit it independently without ever seeing plaintext.
+  out.api_key2_masked = maskKey(c.api_key2);
+  out.has_api_key2 = !!c.api_key2;
+  delete out.api_key2;
   // Surface zone_ids as a clean array for the UI; keep null when unset.
   out.zone_ids = parseZoneIdsField(c.zone_ids);
   return out;
@@ -137,7 +142,7 @@ router.get('/customers/:id', (req, res) => {
 router.post('/customers', (req, res) => {
   const {
     name, contact, remark,
-    provider, api_key, api_user, api_base_url, zone_ids,
+    provider, api_key, api_key2, api_user, api_base_url, zone_ids,
     unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
     alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
@@ -158,11 +163,11 @@ router.post('/customers', (req, res) => {
   try {
     const r = db.prepare(`
       INSERT INTO customers
-        (name, contact, remark, provider, scene, api_key, api_user, api_base_url, zone_ids,
+        (name, contact, remark, provider, scene, api_key, api_key2, api_user, api_base_url, zone_ids,
          unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
          alert_threshold, tg_chat_id, status,
          traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       String(name).trim(),
       contact || null,
@@ -170,6 +175,9 @@ router.post('/customers', (req, res) => {
       provider || 'source1',
       (scene && ['download', 'vod', 'cn2'].includes(scene)) ? scene : 'download',
       api_key || null,
+      // api_key2 is optional & YCDN-only, but we store it regardless of
+      // provider so switching providers back and forth doesn't lose the value.
+      (api_key2 && String(api_key2).trim()) ? String(api_key2).trim() : null,
       api_user || null,
       api_base_url || null,
       normalizeZoneIdsForStorage(zone_ids),
@@ -199,7 +207,7 @@ router.put('/customers/:id', (req, res) => {
 
   const {
     name, contact, remark,
-    provider, api_key, api_user, api_base_url, zone_ids,
+    provider, api_key, api_key2, api_user, api_base_url, zone_ids,
     unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
     alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
@@ -214,6 +222,11 @@ router.put('/customers/:id', (req, res) => {
   let nextApiKey = c.api_key;
   if (api_key === null) nextApiKey = null;
   else if (typeof api_key === 'string' && api_key.trim() !== '') nextApiKey = api_key.trim();
+
+  // Same pattern for api_key2 (optional secondary key, YCDN-only usage).
+  let nextApiKey2 = c.api_key2;
+  if (api_key2 === null) nextApiKey2 = null;
+  else if (typeof api_key2 === 'string' && api_key2.trim() !== '') nextApiKey2 = api_key2.trim();
 
   // api_user is not sensitive — empty string clears, undefined keeps.
   const nextApiUser = (api_user === undefined) ? c.api_user : (api_user || null);
@@ -263,6 +276,7 @@ router.put('/customers/:id', (req, res) => {
       provider = ?,
       scene = ?,
       api_key = ?,
+      api_key2 = ?,
       api_user = ?,
       api_base_url = ?,
       zone_ids = ?,
@@ -285,6 +299,7 @@ router.put('/customers/:id', (req, res) => {
     provider || c.provider || 'source1',
     nextScene,
     nextApiKey,
+    nextApiKey2,
     nextApiUser,
     (api_base_url === undefined) ? c.api_base_url : (api_base_url || null),
     nextZoneIds,

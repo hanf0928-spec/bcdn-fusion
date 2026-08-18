@@ -52,16 +52,69 @@ async function syncCustomer(customer, opts = {}) {
   const startDate = opts.startDate || defaultStartDate();
   const endDate   = opts.endDate   || today();
 
+  // ---- Fetch daily traffic --------------------------------------------
+  // YCDN (source1) can carry a secondary api_key2. When present, we pull
+  // with both keys, sum traffic_gb / request_count per (usage_date), and
+  // pick the MAX for domain_count-style snapshots later.
+  //
+  // Multi-key policy (Q3-C): "any success wins" — if at least one key
+  // returns data, we proceed with the merged result; only when EVERY key
+  // errors do we surface the failure. Per-key failures are recorded into
+  // the sync_logs message so the operator can still diagnose them.
+  const isYcdn = (customer.provider || 'source1') === 'source1';
+  const keys = [customer.api_key];
+  if (isYcdn && customer.api_key2 && String(customer.api_key2).trim()) {
+    keys.push(String(customer.api_key2).trim());
+  }
+
   let rows;
+  const keyErrors = [];         // failures encountered across all keys
+  const keySucc   = [];         // 1-based indexes of keys that returned rows
   try {
-    rows = await driver.fetchDailyTraffic({
-      apiKey:   customer.api_key,
-      apiUser:  customer.api_user || undefined,
-      baseUrl:  customer.api_base_url || undefined,
-      zoneIds:  parseZoneIds(customer.zone_ids),
-      startDate,
-      endDate,
-    });
+    if (keys.length === 1) {
+      rows = await driver.fetchDailyTraffic({
+        apiKey:   keys[0],
+        apiUser:  customer.api_user || undefined,
+        baseUrl:  customer.api_base_url || undefined,
+        zoneIds:  parseZoneIds(customer.zone_ids),
+        startDate,
+        endDate,
+      });
+      keySucc.push(1);
+    } else {
+      // Merge daily rows by usage_date. traffic_gb and request_count sum;
+      // any per-day flag we can't merge is dropped. Order restored by date.
+      const merged = new Map(); // usage_date -> { traffic_gb, request_count }
+      for (let i = 0; i < keys.length; i++) {
+        try {
+          const partial = await driver.fetchDailyTraffic({
+            apiKey:   keys[i],
+            apiUser:  customer.api_user || undefined,
+            baseUrl:  customer.api_base_url || undefined,
+            zoneIds:  parseZoneIds(customer.zone_ids),
+            startDate,
+            endDate,
+          });
+          for (const r of partial || []) {
+            const d = String(r.usage_date || '');
+            if (!d) continue;
+            const cur = merged.get(d) || { usage_date: d, traffic_gb: 0, request_count: 0 };
+            cur.traffic_gb    += Number(r.traffic_gb   || 0);
+            cur.request_count += Number(r.request_count || 0);
+            merged.set(d, cur);
+          }
+          keySucc.push(i + 1);
+        } catch (e) {
+          keyErrors.push(`key#${i + 1}: ${e.message}`);
+        }
+      }
+      if (keySucc.length === 0) {
+        // All keys failed — bubble up the first error, keep the rest in
+        // logSync message below.
+        throw new Error(keyErrors.join(' | '));
+      }
+      rows = [...merged.values()].sort((a, b) => a.usage_date < b.usage_date ? -1 : 1);
+    }
   } catch (e) {
     logSync(customer, false, 0, 0, e.message);
     throw e;
@@ -82,21 +135,29 @@ async function syncCustomer(customer, opts = {}) {
   let domainCount = 0;
   let domainCountOk = false;
   if (typeof driver.fetchDomainCount === 'function') {
-    try {
-      const n = await driver.fetchDomainCount({
-        apiKey:  customer.api_key,
-        apiUser: customer.api_user || undefined,
-        baseUrl: customer.api_base_url || undefined,
-        zoneIds: parseZoneIds(customer.zone_ids),
-      });
-      domainCount   = Number(n) || 0;
+    const partialCounts = [];
+    for (let i = 0; i < keys.length; i++) {
+      try {
+        const n = await driver.fetchDomainCount({
+          apiKey:  keys[i],
+          apiUser: customer.api_user || undefined,
+          baseUrl: customer.api_base_url || undefined,
+          zoneIds: parseZoneIds(customer.zone_ids),
+        });
+        partialCounts.push(Number(n) || 0);
+      } catch (e) {
+        // Non-fatal: continue. Domain fetch failure is separate from
+        // traffic fetch — one key's fetchDomainCount failing does NOT
+        // invalidate the traffic data we already merged above.
+        // eslint-disable-next-line no-console
+        console.warn(`[sync] fetchDomainCount(${customer.provider}) key#${i + 1} failed for "${customer.name}": ${e.message}`);
+      }
+    }
+    if (partialCounts.length > 0) {
+      // Q2-B: multiple keys → take MAX (keys often mirror the same domain
+      // pool; summing would double-count).
+      domainCount = partialCounts.reduce((m, v) => v > m ? v : m, 0);
       domainCountOk = true;
-    } catch (e) {
-      // Non-fatal: continue the traffic sync but log the reason.
-      domainCount = 0;
-      domainCountOk = false;
-      // eslint-disable-next-line no-console
-      console.warn(`[sync] fetchDomainCount(${customer.provider}) failed for "${customer.name}": ${e.message}`);
     }
   }
 
@@ -224,8 +285,18 @@ async function syncCustomer(customer, opts = {}) {
       ? `${adjDelta >= 0 ? '+' : ''}${stats.round4(adjDelta)}GB once @anchor=${anchorMonth}`
       : `${adjDelta >= 0 ? '+' : ''}${stats.round4(adjDelta)}GB SKIPPED (${deltaSkipReason})`);
   }
-  const logMsg = adjMsgParts.length
-    ? `${startDate} ~ ${endDate} (adj ${adjMsgParts.join(' ')})`
+  // Multi-key trace: only surface when >1 key is configured so the common
+  // single-key case keeps its short log line.
+  const keyMsgParts = [];
+  if (keys.length > 1) {
+    keyMsgParts.push(`keys=${keySucc.length}/${keys.length}`);
+    if (keyErrors.length) keyMsgParts.push(keyErrors.join(' | '));
+  }
+  const suffixBits = [];
+  if (adjMsgParts.length) suffixBits.push(`adj ${adjMsgParts.join(' ')}`);
+  if (keyMsgParts.length) suffixBits.push(keyMsgParts.join(' '));
+  const logMsg = suffixBits.length
+    ? `${startDate} ~ ${endDate} (${suffixBits.join('; ')})`
     : `${startDate} ~ ${endDate}`;
   logSync(customer, true, rows.length, stats.round4(totalTraffic), logMsg);
 

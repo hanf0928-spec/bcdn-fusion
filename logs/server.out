@@ -48,3 +48,41 @@
 [cron] alert check: {"checked":5,"alerted":4,"results":[{"customer":"防报毒","balance":-1401.04,"threshold":500,"sent":false},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"sent":false},{"customer":"防报毒1","balance":-88042.11,"threshold":100,"sent":false},{"customer":"YCN2测试客户","balance":0,"threshold":100,"sent":false}]}
 [cron] sync: 4 customers, results=3 ok
 [cron] alert check: {"checked":5,"alerted":0,"results":[{"customer":"防报毒","balance":-1402.23,"threshold":500,"skipped":"cooldown (300 min remaining)"},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (300 min remaining)"},{"customer":"防报毒1","balance":-88089.92,"threshold":100,"skipped":"cooldown (300 min remaining)"},{"customer":"YCN2测试客户","balance":0,"threshold":100,"skipped":"cooldown (300 min remaining)"}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":0,"results":[{"customer":"防报毒","balance":-1403.38,"threshold":500,"skipped":"cooldown (240 min remaining)"},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (240 min remaining)"},{"customer":"防报毒1","balance":-88135.68,"threshold":100,"skipped":"cooldown (240 min remaining)"}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":0,"results":[{"customer":"防报毒","balance":-1405.86,"threshold":500,"skipped":"cooldown (120 min remaining)"},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (120 min remaining)"},{"customer":"防报毒1","balance":-88234.82,"threshold":100,"skipped":"cooldown (120 min remaining)"}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":3,"results":[{"customer":"防报毒","balance":-1408.8,"threshold":500,"sent":false},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"sent":false},{"customer":"防报毒1","balance":-88352.67,"threshold":100,"sent":false}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":0,"results":[{"customer":"防报毒","balance":-1410.22,"threshold":500,"skipped":"cooldown (240 min remaining)"},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (240 min remaining)"},{"customer":"防报毒1","balance":-88409.19,"threshold":100,"skipped":"cooldown (240 min remaining)"}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":3,"results":[{"customer":"防报毒","balance":-1413.79,"threshold":500,"sent":false},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"sent":false},{"customer":"防报毒1","balance":-88552.18,"threshold":100,"sent":false}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":0,"results":[{"customer":"防报毒","balance":-1419.41,"threshold":500,"skipped":"cooldown (300 min remaining)"},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (300 min remaining)"},{"customer":"防报毒1","balance":-88776.97,"threshold":100,"skipped":"cooldown (300 min remaining)"}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":3,"results":[{"customer":"防报毒","balance":-1419.41,"threshold":500,"sent":false},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"sent":false},{"customer":"防报毒1","balance":-88776.97,"threshold":100,"sent":false}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] sync: 3 customers, results=3 ok
+[cron] sync: 3 customers, results=3 ok
+[cron] sync: 3 customers, results=3 ok
+[cron] sync: 3 customers, results=3 ok
+[cron] sync: 3 customers, results=0 ok
+[cron] alert check: {"checked":4,"alerted":3,"results":[{"customer":"防报毒","balance":-1446.71,"threshold":500,"sent":false},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"sent":false},{"customer":"防报毒1","balance":-89869.15,"threshold":100,"sent":false}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":3,"results":[{"customer":"防报毒","balance":-1464.33,"threshold":500,"sent":false},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"sent":false},{"customer":"防报毒1","balance":-90573.88,"threshold":100,"sent":false}]}
+[cron] alert check: {"checked":4,"alerted":3,"results":[{"customer":"防报毒","balance":-1464.33,"threshold":500,"sent":false},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"sent":false},{"customer":"防报毒1","balance":-90573.88,"threshold":100,"sent":false}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":3,"results":[{"customer":"防报毒","balance":-1486.24,"threshold":500,"sent":false},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"sent":false},{"customer":"防报毒1","balance":-91450.41,"threshold":100,"sent":false}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":0,"results":[{"customer":"防报毒","balance":-1487.43,"threshold":500,"skipped":"cooldown (300 min remaining)"},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (300 min remaining)"},{"customer":"防报毒1","balance":-91497.95,"threshold":100,"skipped":"cooldown (300 min remaining)"}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":0,"results":[{"customer":"防报毒","balance":-1488.69,"threshold":500,"skipped":"cooldown (240 min remaining)"},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (240 min remaining)"},{"customer":"防报毒1","balance":-91548.34,"threshold":100,"skipped":"cooldown (240 min remaining)"}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":0,"results":[{"customer":"防报毒","balance":-1491.41,"threshold":500,"skipped":"cooldown (120 min remaining)"},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (120 min remaining)"},{"customer":"防报毒1","balance":-91657.4,"threshold":100,"skipped":"cooldown (120 min remaining)"}]}
+[cron] sync: 3 customers, results=3 ok
+[cron] alert check: {"checked":4,"alerted":0,"results":[{"customer":"防报毒","balance":-1492.96,"threshold":500,"skipped":"cooldown (60 min remaining)"},{"customer":"APP下载1","balance":843.36,"threshold":500,"ok":true},{"customer":"op集群大客","balance":0,"threshold":500,"skipped":"cooldown (60 min remaining)"},{"customer":"防报毒1","balance":-91719.34,"threshold":100,"skipped":"cooldown (60 min remaining)"}]}
+[cron] sync: 3 customers, results=3 ok
