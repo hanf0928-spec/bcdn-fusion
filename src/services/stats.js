@@ -462,10 +462,65 @@ function getCustomerStats(customerId, costMap) {
   const totalRequests = round2(u.requests);
   const totalDomains  = round2(u.domains);
 
-  // Revenue: amount already includes traffic_fee + request_fee. Add the
-  // peak-based domain_fee at the customer's own domain price.
+  // Revenue-side domain fee: peak domains × customer's own domain price.
   const totalDomainRevenueFee = round2(totalDomains * priceDomain);
-  const totalRevenue = round2(Number(u.amount_sum || 0) + totalDomainRevenueFee);
+
+  // CN2 min-commit lifetime overlay.
+  //   For each settled month, the min-commit fee REPLACES that month's
+  //   raw SUM(traffic_fee) in revenue (since fee = max(commit, actual) *
+  //   price already covers the billable traffic at/above the commit
+  //   floor). Non-settled months keep their raw traffic fee.
+  //
+  //   totalRevenue = SUM(amount)  // = traffic_fee + request_fee across all months
+  //                - SUM(traffic_fee of settled months)     // strip out the raw
+  //                + SUM(min_commit_fee of settled months)  // replace with commit fee
+  //                + totalDomainRevenueFee
+  let totalMinCommitFee     = 0;   // sum of chosen min-commit fees (final > mid)
+  let displacedTrafficFee   = 0;   // sum of raw traffic_fee for the same months
+  if (scene === 'cn2') {
+    const commitRows = db.prepare(`
+      SELECT month, mode, fee FROM min_commit_records
+      WHERE customer_id = ?
+    `).all(customerId);
+    const perMonth = new Map();
+    for (const cr of commitRows) {
+      const prev = perMonth.get(cr.month);
+      if (!prev || cr.mode === 'final') perMonth.set(cr.month, cr);
+    }
+    if (perMonth.size > 0) {
+      const monthList = [...perMonth.keys()];
+      const placeholders = monthList.map(() => '?').join(',');
+      const perMonthTraffic = db.prepare(`
+        SELECT substr(usage_date, 1, 7) AS month,
+               COALESCE(SUM(traffic_fee), 0) AS tfee,
+               COALESCE(SUM(request_fee), 0) AS rfee,
+               COALESCE(SUM(amount),      0) AS amt
+        FROM usage_records
+        WHERE customer_id = ? AND substr(usage_date, 1, 7) IN (${placeholders})
+        GROUP BY month
+      `).all(customerId, ...monthList);
+      const trafficByMonth = new Map();
+      for (const row of perMonthTraffic) {
+        // Fall back to (amount - request_fee) when traffic_fee column is
+        // 0 on legacy rows written before per-fee snapshots existed.
+        const t = Number(row.tfee || 0);
+        const displaced = t > 0
+          ? t
+          : Math.max(0, Number(row.amt || 0) - Number(row.rfee || 0));
+        trafficByMonth.set(row.month, displaced);
+      }
+      for (const cr of perMonth.values()) {
+        totalMinCommitFee   += Number(cr.fee || 0);
+        displacedTrafficFee += Number(trafficByMonth.get(cr.month) || 0);
+      }
+      totalMinCommitFee   = round2(totalMinCommitFee);
+      displacedTrafficFee = round2(displacedTrafficFee);
+    }
+  }
+
+  const totalRevenue = round2(
+    Number(u.amount_sum || 0) - displacedTrafficFee + totalMinCommitFee + totalDomainRevenueFee
+  );
 
   // Cost side (three-mode).
   const totalTrafficCost  = round2(totalTraffic  * cost.traffic);
@@ -491,6 +546,9 @@ function getCustomerStats(customerId, costMap) {
     // Revenue-side domain fee (customer price × peak domains), kept
     // separately so the UI can surface it alongside SUM(amount).
     totalDomainRevenueFee,
+    // Revenue-side CN2 min-commit top-up (0 for non-CN2). Sum of the
+    // preferred (final > mid) settlement fee across all settled months.
+    totalMinCommitFee,
     totalResourceCost: totalResource,
     totalGrossProfit:  totalProfit,
     balance,
@@ -506,6 +564,22 @@ function getCustomerStats(customerId, costMap) {
  *   - amount stored on each row = traffic_fee + request_fee (no domain).
  *   - revenue = SUM(amount) + MAX(domain_count) * customer.unit_price_domain.
  */
+/**
+ * Monthly traffic / billing breakdown for a customer.
+ *
+ * Per X2 policy:
+ *   - traffic_gb / request_count are SUMmed daily (flow metrics).
+ *   - domain_count is MAX per month (peak snapshot).
+ *   - amount stored on each row = traffic_fee + request_fee (no domain).
+ *   - revenue = SUM(amount) + MAX(domain_count) * customer.unit_price_domain.
+ *
+ * CN2 min-commit overlay:
+ *   When a settlement row exists for the month, the min-commit fee
+ *   (= max(commit, actual) * unit_price) REPLACES the raw traffic fee
+ *   (SUM(traffic_fee)) in revenue, because it already covers the
+ *   billable traffic at or above the commit floor. Request/domain fees
+ *   stay untouched.
+ */
 function getCustomerMonthlyUsage(customerId, month, costMap) {
   const cm = costMap || buildCostMap();
   const c = db.prepare(`SELECT provider, scene, unit_price_domain FROM customers WHERE id = ?`).get(customerId);
@@ -517,6 +591,8 @@ function getCustomerMonthlyUsage(customerId, month, costMap) {
            ROUND(SUM(traffic_gb), 4) AS traffic_gb,
            ROUND(SUM(request_count), 2) AS request_count,
            ROUND(MAX(domain_count), 2)  AS domain_count,
+           ROUND(SUM(traffic_fee), 2) AS traffic_fee_sum,
+           ROUND(SUM(request_fee), 2) AS request_fee_sum,
            ROUND(SUM(amount),     2) AS amount,
            COUNT(*)                  AS days
     FROM usage_records
@@ -527,15 +603,51 @@ function getCustomerMonthlyUsage(customerId, month, costMap) {
   sql += ` GROUP BY month ORDER BY month ASC`;
 
   const rows = db.prepare(sql).all(...params);
+
+  // CN2 min-commit: for each month, if we've settled a fee (see
+  // services/minCommit.js), it replaces the raw traffic-fee portion of
+  // monthly revenue. Priority: 'final' (locked settlement) overrides
+  // 'mid' (preview settlement) so the same month can carry a preview
+  // number from the 28th until the 1st-of-next-month cron replaces it
+  // with the definitive value.
+  const commitByMonth = new Map();
+  if (c && (c.scene || 'download') === 'cn2') {
+    let cSql = `
+      SELECT month, mode, fee, shortfall_gb, min_commit_gb, actual_gb, unit_price
+      FROM min_commit_records WHERE customer_id = ?
+    `;
+    const cParams = [customerId];
+    if (month) { cSql += ` AND month = ?`; cParams.push(month); }
+    const commitRows = db.prepare(cSql).all(...cParams);
+    for (const cr of commitRows) {
+      const prev = commitByMonth.get(cr.month);
+      if (!prev || cr.mode === 'final') commitByMonth.set(cr.month, cr);
+    }
+  }
+
   return rows.map(r => {
     const traffic  = Number(r.traffic_gb || 0);
     const requests = Number(r.request_count || 0);
     const domains  = Number(r.domain_count || 0);
     const amount   = Number(r.amount || 0);          // traffic+request fees only
+    const trafficFeeSum = Number(r.traffic_fee_sum || 0);
+    const requestFeeSum = Number(r.request_fee_sum || 0);
     // Revenue-side domain fee: peak domains × customer's own domain price.
     const domainRevenueFee = round2(domains * priceDomain);
-    const revenue  = round2(amount + domainRevenueFee);
-    // Cost-side per-axis fees.
+
+    // CN2 min-commit REPLACES the raw traffic fee when a settlement exists.
+    //   revenue_traffic_portion = commit ? min_commit_fee : SUM(traffic_fee)
+    // Fall back to `amount - request_fee_sum` when traffic_fee_sum is 0
+    // for legacy rows written before the per-fee columns were populated.
+    const commit = commitByMonth.get(r.month) || null;
+    const minCommitFee = commit ? round2(Number(commit.fee || 0)) : 0;
+    const rawTrafficFee = trafficFeeSum > 0
+      ? trafficFeeSum
+      : round2(Math.max(0, amount - requestFeeSum));
+    const trafficRevenueFee = commit ? minCommitFee : rawTrafficFee;
+    const revenue = round2(trafficRevenueFee + requestFeeSum + domainRevenueFee);
+
+    // Cost-side per-axis fees (unchanged — driven by scene_costs).
     const trafficFee = round2(traffic * cost.traffic);
     const requestFee = round2(requests * cost.request);
     const domainFee  = round2(domains * cost.domain);
@@ -547,8 +659,19 @@ function getCustomerMonthlyUsage(customerId, month, costMap) {
       request_count: round2(requests),
       domain_count:  round2(domains),         // MAX for the month
       amount:        round2(amount),          // legacy: traffic_fee+request_fee only
-      revenue:       revenue,                 // includes monthly domain fee
+      revenue:       revenue,                 // min-commit REPLACES traffic fee when settled
       domain_revenue_fee: domainRevenueFee,   // surfaced for UI transparency
+      // CN2 min-commit surfacing (all zeros for non-CN2 / not-yet-settled months).
+      min_commit_gb:           commit ? Number(commit.min_commit_gb || 0) : 0,
+      min_commit_actual_gb:    commit ? Number(commit.actual_gb || 0)     : 0,
+      min_commit_shortfall_gb: commit ? Number(commit.shortfall_gb || 0)  : 0,
+      min_commit_fee:          minCommitFee,
+      min_commit_mode:         commit ? commit.mode : null,
+      // Traffic-fee attribution: what actually landed in revenue vs the
+      // raw SUM(traffic_fee) captured from usage_records. Handy for the UI
+      // to explain "why is my revenue higher than my raw traffic × price".
+      traffic_revenue_fee:     round2(trafficRevenueFee),
+      raw_traffic_fee:         round2(rawTrafficFee),
       platform_cost: platform,
       traffic_fee:   trafficFee,
       request_fee:   requestFee,

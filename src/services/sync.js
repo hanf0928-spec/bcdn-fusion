@@ -182,7 +182,15 @@ async function syncCustomer(customer, opts = {}) {
     VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
     ON CONFLICT(customer_id, usage_date) DO UPDATE SET
       traffic_gb         = excluded.traffic_gb,
-      domain_count       = excluded.domain_count,
+      -- Domain count is billed at the MONTHLY aggregate as MAX(domain_count)
+      -- × domain price (see stats.js). Each sync pulls /api/v1.0/domain/list
+      -- and gets the *current* total of registered domains; we must NOT
+      -- blindly overwrite every day's snapshot with that latest value, or a
+      -- transiently inflated count would be carried into MAX() and over-bill
+      -- the customer (see bug: "多计算个域名费用"). Instead we keep the
+      -- MONTH-PEAK: take MAX(existing recorded value, this sync's value) so
+      -- the month's observed maximum is preserved and only ever grows.
+      domain_count       = MAX(domain_count, excluded.domain_count),
       unit_price         = excluded.unit_price,
       unit_price_traffic = excluded.unit_price_traffic,
       unit_price_request = excluded.unit_price_request,
@@ -252,9 +260,10 @@ async function syncCustomer(customer, opts = {}) {
 
   const tx = db.transaction((items) => {
     // Snapshot the customer's current three-mode pricing. request_count is
-    // still 0 (upstream lacks the endpoint); domain_count is stamped from
-    // the just-fetched snapshot onto every day, so MAX() over any month
-    // yields the peak observed value.
+    // still 0 (upstream lacks the endpoint). domain_count reflects the
+    // peak observed this month: the upsert keeps MAX(existing, current
+    // snapshot), so MAX() over any month yields the true peak — never an
+    // over-billed transient spike (domain over-billing bug fix).
     //
     // amount holds ONLY the daily flow fees (traffic + request) — domain
     // is billed at the monthly aggregate level using MAX(domain_count).

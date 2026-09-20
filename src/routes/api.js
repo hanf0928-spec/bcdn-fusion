@@ -4,6 +4,7 @@ const express = require('express');
 const db = require('../db');
 const stats = require('../services/stats');
 const sync  = require('../services/sync');
+const minCommit = require('../services/minCommit');
 
 const router = express.Router();
 
@@ -146,6 +147,7 @@ router.post('/customers', (req, res) => {
     unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
     alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
+    min_commit_gb,
   } = req.body || {};
   if (!name || !String(name).trim()) return fail(res, 400, 'name is required');
 
@@ -160,14 +162,20 @@ router.post('/customers', (req, res) => {
   const priceRequest = num(unit_price_request, 0);
   const priceDomain  = num(unit_price_domain,  0);
 
+  // CN2 min-commit is only meaningful for scene='cn2'. We still store any
+  // value the caller sends (so switching scene back to cn2 recovers it),
+  // but negative values are clamped to 0.
+  const minCommitGb = Math.max(0, num(min_commit_gb, 0));
+
   try {
     const r = db.prepare(`
       INSERT INTO customers
         (name, contact, remark, provider, scene, api_key, api_key2, api_user, api_user2, api_base_url, zone_ids,
          unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
          alert_threshold, tg_chat_id, status,
-         traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
+         min_commit_gb)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       String(name).trim(),
       contact || null,
@@ -194,6 +202,7 @@ router.post('/customers', (req, res) => {
       clampPct(num(traffic_adjust_pct, 0)),
       num(traffic_adjust_delta_gb, 0),
       anchorMonthIn === undefined ? null : anchorMonthIn,
+      minCommitGb,
     );
     ok(res, { id: r.lastInsertRowid });
   } catch (e) {
@@ -214,6 +223,7 @@ router.put('/customers/:id', (req, res) => {
     unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
     alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
+    min_commit_gb,
   } = req.body || {};
 
   let anchorMonthIn;
@@ -274,6 +284,11 @@ router.put('/customers/:id', (req, res) => {
     ? num(unit_price_domain, c.unit_price_domain || 0)
     : Number(c.unit_price_domain || 0);
 
+  // CN2 min-commit: undefined => keep, otherwise clamp to >= 0.
+  const nextMinCommitGb = (min_commit_gb === undefined)
+    ? Number(c.min_commit_gb || 0)
+    : Math.max(0, num(min_commit_gb, 0));
+
   db.prepare(`
     UPDATE customers SET
       name = ?,
@@ -297,6 +312,7 @@ router.put('/customers/:id', (req, res) => {
       traffic_adjust_pct = ?,
       traffic_adjust_delta_gb = ?,
       traffic_adjust_anchor_month = ?,
+      min_commit_gb = ?,
       updated_at = datetime('now','localtime')
     WHERE id = ?
   `).run(
@@ -321,6 +337,7 @@ router.put('/customers/:id', (req, res) => {
     nextAdjPct,
     nextAdjDelta,
     nextAnchorMonth,
+    nextMinCommitGb,
     id,
   );
   // If any of the three price knobs changed, recompute every usage_records
@@ -422,6 +439,61 @@ router.get('/sync/logs', (req, res) => {
   if (cid) { sql += ` WHERE s.customer_id = ?`; params.push(cid); }
   sql += ` ORDER BY s.id DESC LIMIT 100`;
   ok(res, db.prepare(sql).all(...params));
+});
+
+// =====================================================
+// CN2 Minimum-traffic commitment settlement
+//
+//   Two scheduled runs per month (see src/server.js cron):
+//     - 28th : mode='mid'   → settles the current month (preview)
+//     - 1st  : mode='final' → settles the previous month (locked-in)
+//
+//   These endpoints let operators inspect the settled rows and
+//   manually re-run a settlement (idempotent per (customer, month, mode)).
+// =====================================================
+
+// List settlements for one customer (optionally filtered by ?month=YYYY-MM).
+router.get('/customers/:id/min-commit', (req, res) => {
+  const id = num(req.params.id);
+  const month = req.query.month;
+  const list = minCommit.listForCustomer(id, month);
+  ok(res, list);
+});
+
+// Manually settle ONE customer for one (month, mode). Both fields optional:
+//   - mode  : 'mid' (default when unset OR when month is current) | 'final'
+//   - month : YYYY-MM. Defaults to current month for 'mid', previous for 'final'.
+router.post('/customers/:id/min-commit/settle', (req, res) => {
+  const id = num(req.params.id);
+  const mode = String(req.body?.mode || 'mid');
+  if (mode !== 'mid' && mode !== 'final') {
+    return fail(res, 400, `invalid mode: ${mode} (expected 'mid' | 'final')`);
+  }
+  const month = req.body?.month || (mode === 'final'
+    ? minCommit.previousMonth(minCommit.currentMonth())
+    : minCommit.currentMonth());
+  try {
+    const out = minCommit.settleForMonth(id, month, mode);
+    if (!out) return fail(res, 400, 'customer is not eligible (needs scene=cn2 and min_commit_gb > 0)');
+    ok(res, out);
+  } catch (e) {
+    fail(res, 500, e.message);
+  }
+});
+
+// Manually run a settlement for ALL eligible customers.
+// Body: { mode: 'mid' | 'final', month?: 'YYYY-MM' }
+router.post('/min-commit/run', (req, res) => {
+  const mode = String(req.body?.mode || 'mid');
+  if (mode !== 'mid' && mode !== 'final') {
+    return fail(res, 400, `invalid mode: ${mode} (expected 'mid' | 'final')`);
+  }
+  try {
+    const r = minCommit.settleAll(mode, req.body?.month);
+    ok(res, r);
+  } catch (e) {
+    fail(res, 500, e.message);
+  }
 });
 
 // =====================================================

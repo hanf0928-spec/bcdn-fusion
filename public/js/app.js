@@ -578,6 +578,12 @@ function renderDetailOverview(el) {
             $${fmt.money(c.unit_price_domain)} /个</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">告警阈值</dt><dd class="num">$ ${fmt.money(c.alert_threshold)} USDT</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">流量校准</dt><dd class="text-right text-xs">${renderAdjustSummary(c)}</dd></div>
+          ${(c.scene === 'cn2') ? `
+          <div class="flex justify-between"><dt class="text-slate-500">保底流量</dt><dd class="num text-right">${
+            Number(c.min_commit_gb || 0) > 0
+              ? `${fmt.traffic(c.min_commit_gb)} TB <span class="text-[10px] text-slate-400">/月</span>`
+              : '<span class="text-slate-400">未启用</span>'
+          }</dd></div>` : ''}
           <div class="flex justify-between"><dt class="text-slate-500">TG chat_id</dt><dd class="font-mono text-xs">${fmt.esc(c.tg_chat_id || '（使用全局）')}</dd></div>
           <div class="pt-2 border-t border-slate-100"><dt class="text-slate-500 mb-1">备注</dt><dd class="text-slate-700 whitespace-pre-wrap">${fmt.esc(c.remark || '—')}</dd></div>
         </dl>
@@ -591,6 +597,9 @@ function renderDetailOverview(el) {
           <tr><th class="text-left px-4 py-2">月份</th>
               <th class="text-right px-4 py-2">天数</th>
               <th class="text-right px-4 py-2">流量（TB）</th>
+              <th class="text-right px-4 py-2">域名数<small class="text-slate-400">（本月峰值）</small></th>
+              <th class="text-right px-4 py-2">域名费</th>
+              <th class="text-right px-4 py-2">保底计费</th>
               <th class="text-right px-4 py-2">营收（USDT）</th>
               <th class="text-right px-4 py-2">平台成本</th>
               <th class="text-right px-4 py-2">资源成本</th>
@@ -599,17 +608,32 @@ function renderDetailOverview(el) {
         <tbody>
           ${(c.monthly || []).map(m => {
             const profit = Number(m.gross_profit ?? (Number(m.revenue ?? m.amount) - Number(m.platform_cost || 0) - Number(m.resource_cost || 0)));
+            const mcFee = Number(m.min_commit_fee || 0);
+            const mcCommit = Number(m.min_commit_gb || 0);
+            const mcActual = Number(m.min_commit_actual_gb || 0);
+            const mcShort = Number(m.min_commit_shortfall_gb || 0);
+            const mcMode = m.min_commit_mode;
+            const usedFloor = mcShort > 0; // actual < commit → billed at commit floor
+            const mcCell = mcFee > 0
+              ? `<div class="leading-tight" title="计费公式：max(保底 ${mcCommit.toFixed(2)}GB, 实际 ${mcActual.toFixed(2)}GB) × 单价 = ${mcFee.toFixed(2)} USDT（${mcMode==='final'?'最终结算':'预结算'}${usedFloor?'，按保底计费':'，按实际计费'}）">
+                    <div class="num ${usedFloor?'text-amber-600':'text-slate-600'}">$ ${fmt.money(mcFee)}</div>
+                    <div class="text-[10px] text-slate-400 num">${usedFloor?`保底 ${mcCommit.toFixed(0)} GB`:`实际 ${mcActual.toFixed(2)} GB`} · ${mcMode==='final'?'最终':'预结算'}</div>
+                  </div>`
+              : (mcMode ? `<span class="text-slate-400 text-xs" title="已结算但费用为 0">—</span>` : `<span class="text-slate-300">—</span>`);
             return `
             <tr class="border-t border-slate-100">
               <td class="px-4 py-2 font-medium">${fmt.esc(m.month)}</td>
               <td class="px-4 py-2 text-right num">${m.days}</td>
               <td class="px-4 py-2 text-right num">${fmt.traffic(m.traffic_gb)}</td>
+              <td class="px-4 py-2 text-right num" title="本月域名数峰值（MAX(domain_count)）">${Number(m.domain_count ?? 0).toFixed(0)}</td>
+              <td class="px-4 py-2 text-right num text-slate-500" title="域名费 = 域名数峰值 × 域名单价">$ ${fmt.money(m.domain_revenue_fee ?? 0)}</td>
+              <td class="px-4 py-2 text-right num text-slate-600">${mcCell}</td>
               <td class="px-4 py-2 text-right num">$ ${fmt.money(m.revenue ?? m.amount)}</td>
               <td class="px-4 py-2 text-right num text-slate-500">$ ${fmt.money(m.platform_cost)}</td>
               <td class="px-4 py-2 text-right num text-slate-500">$ ${fmt.money(m.resource_cost)}</td>
               <td class="px-4 py-2 text-right num font-semibold ${profit >= 0 ? 'text-emerald-700' : 'text-rose-600'}">$ ${fmt.money(profit)}</td>
             </tr>`;
-          }).join('') || `<tr><td colspan="7" class="text-center text-slate-400 py-6">暂无用量记录</td></tr>`}
+          }).join('') || `<tr><td colspan="10" class="text-center text-slate-400 py-6">暂无用量记录</td></tr>`}
         </tbody>
       </table>
     </div>
@@ -839,6 +863,9 @@ function openCustomerModal(id) {
       if (form.traffic_adjust_anchor_month) {
         form.traffic_adjust_anchor_month.value = c.traffic_adjust_anchor_month || '';
       }
+      if (form.min_commit_gb) {
+        form.min_commit_gb.value = Number(c.min_commit_gb || 0);
+      }
       form.tg_chat_id.value   = c.tg_chat_id || '';
       form.remark.value       = c.remark || '';
       document.getElementById('api-key-hint').textContent = c.has_api_key
@@ -875,11 +902,18 @@ function syncProviderFieldsVisibility() {
   if (rowKey2) rowKey2.classList.toggle('hidden', !isCcdn);
   const rowUser2 = document.getElementById('row-api-user2');
   if (rowUser2) rowUser2.classList.toggle('hidden', !isCcdn);
+  // CN2 min-commit is scene-gated (visible only when scene='cn2').
+  const scene = form.scene && form.scene.value;
+  const rowMinCommit = document.getElementById('row-min-commit');
+  if (rowMinCommit) rowMinCommit.classList.toggle('hidden', scene !== 'cn2');
 }
 
 // Toggle provider-specific fields whenever the operator switches providers.
 document.querySelector('#form-customer [name=provider]')
   .addEventListener('change', syncProviderFieldsVisibility);
+// Toggle scene-specific fields (e.g. CN2 min-commit) on scene change.
+const _sceneSel = document.querySelector('#form-customer [name=scene]');
+if (_sceneSel) _sceneSel.addEventListener('change', syncProviderFieldsVisibility);
 
 document.getElementById('form-customer').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -925,6 +959,12 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
     traffic_adjust_pct:      Number.isFinite(adjPctVal)  ? adjPctVal  : 0,
     traffic_adjust_delta_gb: Number.isFinite(adjDeltaTb) ? adjDeltaTb * GB_PER_TB : 0,
     traffic_adjust_anchor_month: adjAnchorMonth || null,
+    // CN2 min-commit (GB). Only meaningful when scene='cn2'; for other
+    // scenes we intentionally send 0 so switching scene clears the value
+    // (avoids surprising residual settlements after a scene change).
+    min_commit_gb: (f.scene && f.scene.value === 'cn2')
+      ? Math.max(0, parseFloat((f.min_commit_gb && f.min_commit_gb.value) || '0') || 0)
+      : 0,
   };
   // EO uses Zone IDs; only send for that provider so we don't accidentally
   // overwrite the field on other providers.

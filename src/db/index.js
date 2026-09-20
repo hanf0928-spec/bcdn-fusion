@@ -151,6 +151,53 @@ function init() {
       updated_at           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
       PRIMARY KEY (provider, scene)
     );
+
+    -- ===========================
+    -- CN2 minimum traffic commitment settlement records.
+    --
+    -- Each row is one settlement of a customer's monthly minimum-traffic
+    -- commitment (only meaningful when scene = 'cn2' and
+    -- customers.min_commit_gb > 0).
+    --
+    --   mode = 'mid'    : intra-month settlement (fires on the 28th)
+    --   mode = 'final'  : final settlement of the previous month
+    --                     (fires on the 1st of the next month) — this is
+    --                     the row that ACTUALLY contributes to revenue.
+    --
+    -- Billing rule:
+    --   billable_gb = max(min_commit_gb, actual_gb)   -- commit is a FLOOR
+    --   fee         = billable_gb * unit_price
+    --
+    --   min_commit_gb   : the customer's configured minimum (GB) at
+    --                     settlement time
+    --   actual_gb       : SUM(usage_records.traffic_gb) for the month
+    --   shortfall_gb    : max(0, min_commit_gb - actual_gb)
+    --                     (informational — surfaced in the UI to explain
+    --                      why the fee is above raw traffic × price)
+    --   unit_price      : snapshot of customer.unit_price_traffic at
+    --                     settlement time (USDT / GB)
+    --   fee             : billable_gb × unit_price (USDT). REPLACES the
+    --                     per-day traffic_fee sum in monthly revenue when
+    --                     present — see stats.js for the composition rule.
+    --
+    -- Unique per (customer_id, month, mode) so re-runs are idempotent.
+    -- ===========================
+    CREATE TABLE IF NOT EXISTS min_commit_records (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id    INTEGER NOT NULL,
+      month          TEXT    NOT NULL,         -- YYYY-MM
+      mode           TEXT    NOT NULL,         -- 'mid' | 'final'
+      min_commit_gb  REAL    NOT NULL DEFAULT 0,
+      actual_gb      REAL    NOT NULL DEFAULT 0,
+      shortfall_gb   REAL    NOT NULL DEFAULT 0,
+      unit_price     REAL    NOT NULL DEFAULT 0,
+      fee            REAL    NOT NULL DEFAULT 0,
+      remark         TEXT,
+      settled_at     TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      UNIQUE (customer_id, month, mode)
+    );
+    CREATE INDEX IF NOT EXISTS idx_min_commit_customer_month ON min_commit_records(customer_id, month);
   `);
 
   // -------- lightweight migrations for older DBs --------
@@ -227,6 +274,13 @@ function init() {
   ensureColumn('customers', 'traffic_adjust_pct',           `REAL NOT NULL DEFAULT 0`);
   ensureColumn('customers', 'traffic_adjust_delta_gb',      `REAL NOT NULL DEFAULT 0`);
   ensureColumn('customers', 'traffic_adjust_anchor_month',  `TEXT`);
+
+  // CN2-only: monthly minimum traffic commitment (保底流量, GB). When > 0
+  // AND scene = 'cn2', the min-commit scheduler will top-up the customer's
+  // monthly bill up to this floor. 0 (default) disables the mechanism.
+  // See services/minCommit.js for the settlement logic and server.js for
+  // the two cron slots (28th intra-month + 1st final settlement).
+  ensureColumn('customers', 'min_commit_gb',                `REAL NOT NULL DEFAULT 0`);
 
   // Make sure every (provider, scene) combo has a cost row (zeros until configured).
   const seedSceneCost = db.prepare(`

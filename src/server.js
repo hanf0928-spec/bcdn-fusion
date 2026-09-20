@@ -11,6 +11,7 @@ require('./db'); // ensure DB initialized
 const apiRouter = require('./routes/api');
 const { checkAndAlert } = require('./services/alert');
 const { syncAll } = require('./services/sync');
+const minCommit = require('./services/minCommit');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0'; // listen on all interfaces by default for remote access
@@ -80,6 +81,48 @@ if (cron.validate(syncCron)) {
   console.log(`[cron] sync scheduler enabled: "${syncCron}"`);
 } else {
   console.warn(`[cron] invalid SYNC_CRON: "${syncCron}", scheduler disabled.`);
+}
+
+// =====================================================
+// CN2 minimum-traffic-commitment settlements.
+//
+// Business rule: for every customer with scene='cn2' and min_commit_gb > 0,
+//   - on the 28th of each month  → settle CURRENT month (mode='mid')
+//   - on the 1st  of each month  → settle PREVIOUS month (mode='final')
+//
+// Both cron expressions are overridable via env; defaults fire at 03:00
+// server-local so they land after the last hourly sync of the day.
+// =====================================================
+const midCommitCron = process.env.MIN_COMMIT_MID_CRON || '0 3 28 * *';
+if (cron.validate(midCommitCron)) {
+  cron.schedule(midCommitCron, () => {
+    try {
+      const r = minCommit.settleAll('mid');
+      const okN = r.results.filter(x => x.ok).length;
+      console.log(`[cron] min-commit mid settle (${r.month}): ${okN}/${r.total} ok`);
+    } catch (e) {
+      console.error('[cron] min-commit mid settle failed:', e.message);
+    }
+  });
+  console.log(`[cron] min-commit mid scheduler enabled: "${midCommitCron}"`);
+} else {
+  console.warn(`[cron] invalid MIN_COMMIT_MID_CRON: "${midCommitCron}", disabled.`);
+}
+
+const finalCommitCron = process.env.MIN_COMMIT_FINAL_CRON || '0 3 1 * *';
+if (cron.validate(finalCommitCron)) {
+  cron.schedule(finalCommitCron, () => {
+    try {
+      const r = minCommit.settleAll('final');
+      const okN = r.results.filter(x => x.ok).length;
+      console.log(`[cron] min-commit final settle (${r.month}): ${okN}/${r.total} ok`);
+    } catch (e) {
+      console.error('[cron] min-commit final settle failed:', e.message);
+    }
+  });
+  console.log(`[cron] min-commit final scheduler enabled: "${finalCommitCron}"`);
+} else {
+  console.warn(`[cron] invalid MIN_COMMIT_FINAL_CRON: "${finalCommitCron}", disabled.`);
 }
 
 app.listen(PORT, HOST, () => {
