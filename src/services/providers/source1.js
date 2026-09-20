@@ -209,19 +209,34 @@ function round4(n) { return Math.round((n + Number.EPSILON) * 10000) / 10000; }
 /**
  * Fetch the current number of registered domains for this account.
  *
- * Uses `GET /api/v1.0/domain/list?page=1&size=1000` and returns
- * `data.length`. The `domain/limit` endpoint returns *remaining*
- * quota, not the currently-registered count, so we don't use it here.
+ * Uses `GET /api/v1.0/domain/list?page=1&size=1`. The upstream response
+ * shape (verified on cdn-hw.com) is:
+ *
+ *   { "code": 200, "msg": "...", "total": <int>, "data": [ ...page items... ] }
+ *
+ * The domain COUNT lives at the response's TOP-LEVEL `total`, not on
+ * `data`. We only need the total, so we request a minimal page (size=1)
+ * to keep the payload tiny.
+ *
+ * Historic pitfall: an early implementation used `size=1000` and read
+ * `data.length` — that returned 0 whenever the upstream truncated the
+ * page for large sizes, silently under-billing the customer. Never rely
+ * on `data.length` here; always trust the `total` field.
+ *
+ * The `domain/limit` endpoint is a different beast — it returns the
+ * *remaining* quota (e.g. `data: 7`), not the current count, so we
+ * still don't use it here.
  *
  * @param {object} cfg
  * @param {string} cfg.apiKey    Authorization key
  * @param {string} [cfg.baseUrl] Override base URL
- * @returns {Promise<number>}    current number of domains (0 on empty)
+ * @returns {Promise<number>}    current number of registered domains (0 on empty)
  */
 async function fetchDomainCount(cfg) {
   if (!cfg.apiKey) throw new Error('source1: api_key is required');
   const baseUrl = normalizeBase(cfg.baseUrl || DEFAULT_BASE);
-  const url = `${baseUrl}/api/v1.0/domain/list?page=1&size=1000`;
+  // size=1 keeps payload minimal — we only care about `total`.
+  const url = `${baseUrl}/api/v1.0/domain/list?page=1&size=1`;
 
   const resp = await http.getJSON(url, {
     headers: { Authorization: cfg.apiKey },
@@ -233,11 +248,21 @@ async function fetchDomainCount(cfg) {
     throw new Error(`source1 domain-list API error: ${msg}`);
   }
 
+  // 1) Prefer the top-level `total` (verified upstream shape).
+  if (typeof resp.total === 'number') return resp.total;
+  if (typeof resp.total === 'string' && /^\d+$/.test(resp.total)) return Number(resp.total);
+
+  // 2) Fallbacks for other deployments that may wrap totals differently.
   const data = resp.data;
-  if (Array.isArray(data)) return data.length;
-  // Some deployments wrap the array in { list: [...], total: N }; be tolerant.
-  if (data && Array.isArray(data.list)) return data.list.length;
   if (data && typeof data.total === 'number') return data.total;
+  if (data && data.pagination && typeof data.pagination.total === 'number') return data.pagination.total;
+  if (data && Array.isArray(data.list))    return data.list.length;
+  if (data && Array.isArray(data.records)) return data.records.length;
+  if (data && Array.isArray(data.rows))    return data.rows.length;
+  // LAST resort: page length. NOTE: this is only correct when the caller
+  // uses a page big enough to hold every domain — which is why we no
+  // longer rely on it as the primary path.
+  if (Array.isArray(data)) return data.length;
   return 0;
 }
 

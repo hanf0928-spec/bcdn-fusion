@@ -614,10 +614,14 @@ function renderDetailOverview(el) {
             const mcShort = Number(m.min_commit_shortfall_gb || 0);
             const mcMode = m.min_commit_mode;
             const usedFloor = mcShort > 0; // actual < commit → billed at commit floor
+            // The min-commit knob is edited in TB (default 3 TB); surface it
+            // in TB here too for consistency with the rest of the UI.
+            const mcCommitTB = mcCommit / GB_PER_TB;
+            const mcActualTB = mcActual / GB_PER_TB;
             const mcCell = mcFee > 0
-              ? `<div class="leading-tight" title="计费公式：max(保底 ${mcCommit.toFixed(2)}GB, 实际 ${mcActual.toFixed(2)}GB) × 单价 = ${mcFee.toFixed(2)} USDT（${mcMode==='final'?'最终结算':'预结算'}${usedFloor?'，按保底计费':'，按实际计费'}）">
+              ? `<div class="leading-tight" title="计费公式：max(保底 ${mcCommitTB.toFixed(4)}TB, 实际 ${mcActualTB.toFixed(4)}TB) × 单价 = ${mcFee.toFixed(2)} USDT（${mcMode==='final'?'最终结算':'预结算'}${usedFloor?'，按保底计费':'，按实际计费'}）">
                     <div class="num ${usedFloor?'text-amber-600':'text-slate-600'}">$ ${fmt.money(mcFee)}</div>
-                    <div class="text-[10px] text-slate-400 num">${usedFloor?`保底 ${mcCommit.toFixed(0)} GB`:`实际 ${mcActual.toFixed(2)} GB`} · ${mcMode==='final'?'最终':'预结算'}</div>
+                    <div class="text-[10px] text-slate-400 num">${usedFloor?`保底 ${mcCommitTB.toFixed(2)} TB`:`实际 ${mcActualTB.toFixed(2)} TB`} · ${mcMode==='final'?'最终':'预结算'}</div>
                   </div>`
               : (mcMode ? `<span class="text-slate-400 text-xs" title="已结算但费用为 0">—</span>` : `<span class="text-slate-300">—</span>`);
             return `
@@ -863,8 +867,14 @@ function openCustomerModal(id) {
       if (form.traffic_adjust_anchor_month) {
         form.traffic_adjust_anchor_month.value = c.traffic_adjust_anchor_month || '';
       }
-      if (form.min_commit_gb) {
-        form.min_commit_gb.value = Number(c.min_commit_gb || 0);
+      if (form.min_commit_tb) {
+        // Backend stores GB, form asks for TB. Empty value falls back to
+        // the field's default (3 TB); we only actively overwrite when the
+        // customer has a stored value.
+        const storedGb = Number(c.min_commit_gb || 0);
+        form.min_commit_tb.value = storedGb > 0
+          ? Number((storedGb / GB_PER_TB).toFixed(4))
+          : 0;
       }
       form.tg_chat_id.value   = c.tg_chat_id || '';
       form.remark.value       = c.remark || '';
@@ -959,11 +969,12 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
     traffic_adjust_pct:      Number.isFinite(adjPctVal)  ? adjPctVal  : 0,
     traffic_adjust_delta_gb: Number.isFinite(adjDeltaTb) ? adjDeltaTb * GB_PER_TB : 0,
     traffic_adjust_anchor_month: adjAnchorMonth || null,
-    // CN2 min-commit (GB). Only meaningful when scene='cn2'; for other
-    // scenes we intentionally send 0 so switching scene clears the value
-    // (avoids surprising residual settlements after a scene change).
+    // CN2 min-commit. UI edits TB (default 3 TB), backend stores GB.
+    // For non-CN2 scenes we intentionally send 0 so switching scene
+    // clears the value (avoids surprising residual settlements after
+    // a scene change).
     min_commit_gb: (f.scene && f.scene.value === 'cn2')
-      ? Math.max(0, parseFloat((f.min_commit_gb && f.min_commit_gb.value) || '0') || 0)
+      ? Math.max(0, (parseFloat((f.min_commit_tb && f.min_commit_tb.value) || '0') || 0) * GB_PER_TB)
       : 0,
   };
   // EO uses Zone IDs; only send for that provider so we don't accidentally

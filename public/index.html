@@ -110,10 +110,10 @@
 
         <div id="row-min-commit" class="hidden">
           <label class="block text-xs font-medium text-slate-600 mb-1">
-            每月保底流量 <span class="text-slate-400 font-normal">GB（仅 CN2 场景生效；0 表示不启用）</span>
+            每月保底流量 <span class="text-slate-400 font-normal">TB（仅 CN2 场景生效；0 表示不启用；默认 3 TB）</span>
           </label>
-          <input name="min_commit_gb" type="number" step="0.01" min="0" value="0"
-                 placeholder="例如 1000 = 每月保底 1000 GB"
+          <input name="min_commit_tb" type="number" step="0.01" min="0" value="3"
+                 placeholder="例如 3 = 每月保底 3 TB"
                  class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm num" />
           <div class="text-xs text-slate-400 mt-1">
             系统在每月 28 日按当月流量做一次预结算，1 日再对上月做最终结算：
