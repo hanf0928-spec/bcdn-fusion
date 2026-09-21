@@ -198,6 +198,26 @@ function init() {
       UNIQUE (customer_id, month, mode)
     );
     CREATE INDEX IF NOT EXISTS idx_min_commit_customer_month ON min_commit_records(customer_id, month);
+
+    -- ===========================
+    -- Profit withdrawals (毛利提取)
+    --
+    -- Records each time the operator withdraws / distributes accumulated
+    -- gross profit. Purely bookkeeping: the customer balance is untouched
+    -- (customer balances only move via recharges/usage), and existing
+    -- gross_profit calculations in stats.js stay identical.
+    --
+    -- The overview page shows:
+    --   available_profit = SUM(customer.total_gross_profit) − SUM(withdrawals.amount)
+    -- with the historical (pre-withdrawal) total surfaced in the footer.
+    -- ===========================
+    CREATE TABLE IF NOT EXISTS profit_withdrawals (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      amount      REAL    NOT NULL,        -- USDT (positive)
+      remark      TEXT,
+      created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_profit_withdrawals_created ON profit_withdrawals(created_at);
   `);
 
   // -------- lightweight migrations for older DBs --------

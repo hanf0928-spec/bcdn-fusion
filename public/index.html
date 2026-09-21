@@ -35,6 +35,9 @@
         <button id="btn-revenue-report" class="px-3 py-2 text-sm rounded-lg bg-emerald-100 text-emerald-800 hover:bg-emerald-200 transition">
           📄 营收报表
         </button>
+        <button id="btn-profit-withdraw" class="px-3 py-2 text-sm rounded-lg bg-teal-100 text-teal-800 hover:bg-teal-200 transition" title="记录一笔毛利提取">
+          💰 提取毛利
+        </button>
         <button id="btn-check-alert" class="px-3 py-2 text-sm rounded-lg bg-amber-100 text-amber-800 hover:bg-amber-200 transition">
           ⚡️ 检查告警
         </button>
@@ -332,6 +335,74 @@
       <!-- Report body (this is what gets printed) -->
       <div id="report-body" class="px-8 py-6 max-h-[80vh] overflow-y-auto print-area">
         <div class="text-center text-slate-400 py-20">加载中…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== Profit withdrawal modal (记录一笔毛利提取 + 历史列表) ========== -->
+  <div id="modal-profit-withdraw" class="hidden fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-2xl overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-semibold">毛利提取</h3>
+          <p class="text-xs text-slate-500 mt-0.5">记录已提取的毛利金额与备注。仅账簿口径，不影响客户余额与账单。</p>
+        </div>
+        <button class="text-slate-400 hover:text-slate-600" onclick="UI.closeModal('modal-profit-withdraw')">✕</button>
+      </div>
+
+      <div class="px-6 py-5 space-y-5 max-h-[80vh] overflow-y-auto">
+        <!-- Summary block -->
+        <div id="profit-withdraw-summary" class="grid grid-cols-3 gap-3 text-sm">
+          <div class="stat-card">
+            <div class="stat-label">历史总毛利</div>
+            <div class="stat-value num" data-slot="total"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">已提取</div>
+            <div class="stat-value num text-teal-700" data-slot="withdrawn"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">可提取余额</div>
+            <div class="stat-value num" data-slot="available"></div>
+          </div>
+        </div>
+
+        <!-- New withdrawal form -->
+        <form id="form-profit-withdraw" class="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
+          <div class="grid grid-cols-3 gap-3">
+            <div class="col-span-1">
+              <label class="block text-xs font-medium text-slate-600 mb-1">提取金额（USDT） *</label>
+              <input name="amount" type="number" step="0.01" min="0.01" required autocomplete="off"
+                     class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm num" placeholder="例如 500" />
+            </div>
+            <div class="col-span-2">
+              <label class="block text-xs font-medium text-slate-600 mb-1">备注</label>
+              <input name="remark" placeholder="例如：2026-05 月度分润 / 转账至 xxx"
+                     class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+            </div>
+          </div>
+          <div class="flex justify-end">
+            <button type="submit" class="px-4 py-2 text-sm rounded-lg bg-teal-600 text-white hover:bg-teal-700">＋ 新增提取</button>
+          </div>
+        </form>
+
+        <!-- History table -->
+        <div>
+          <div class="text-xs text-slate-500 mb-2">提取记录（最近 200 条）</div>
+          <table class="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
+            <thead class="bg-slate-50 text-xs text-slate-500 uppercase">
+              <tr>
+                <th class="text-left px-4 py-2">时间</th>
+                <th class="text-right px-4 py-2">金额（USDT）</th>
+                <th class="text-left px-4 py-2">备注</th>
+                <th class="text-right px-4 py-2">操作</th>
+              </tr>
+            </thead>
+            <tbody id="profit-withdraw-list">
+              <tr><td colspan="4" class="text-center text-slate-400 py-6">加载中…</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>

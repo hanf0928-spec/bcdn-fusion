@@ -850,4 +850,90 @@ router.put('/scene-costs/:provider/:scene', (req, res) => {
   }
 });
 
+// =====================================================
+// Profit withdrawals (毛利提取)
+//
+// Bookkeeping-only ledger of "已提取" gross profit. Existing revenue /
+// cost / gross_profit numbers are NOT changed by these rows; the frontend
+// simply subtracts SUM(amount) from the overview's total_gross_profit
+// so operators can see the available (未提取) profit at a glance while
+// still preserving the historical (含已提取) total.
+// =====================================================
+
+/**
+ * Aggregated summary. Query params (both optional):
+ *   ?month=YYYY-MM  → limit to that month
+ *   ?month=all      → whole history (default)
+ *
+ * Returns:
+ *   {
+ *     total_withdrawn : SUM(amount),
+ *     count           : row count,
+ *     latest_at       : most recent created_at or null,
+ *   }
+ */
+router.get('/profit-withdrawals/summary', (req, res) => {
+  const monthIn = req.query.month;
+  const isAll = !monthIn || monthIn === 'all' || monthIn === 'ALL';
+  let sql = `
+    SELECT
+      COALESCE(SUM(amount), 0) AS total_withdrawn,
+      COUNT(*)                  AS count,
+      MAX(created_at)           AS latest_at
+    FROM profit_withdrawals
+  `;
+  const params = [];
+  if (!isAll) {
+    sql += ` WHERE substr(created_at, 1, 7) = ?`;
+    params.push(monthIn);
+  }
+  const row = db.prepare(sql).get(...params) || {};
+  ok(res, {
+    total_withdrawn: stats.round2(Number(row.total_withdrawn || 0)),
+    count:           Number(row.count || 0),
+    latest_at:       row.latest_at || null,
+  });
+});
+
+// List withdrawal rows, most-recent first.
+//   ?month=YYYY-MM  → limit to that month (default: all history)
+//   ?limit=N        → cap the number of rows (default 200)
+router.get('/profit-withdrawals', (req, res) => {
+  const monthIn = req.query.month;
+  const isAll = !monthIn || monthIn === 'all' || monthIn === 'ALL';
+  const limit = Math.max(1, Math.min(1000, num(req.query.limit, 200)));
+  let sql = `SELECT * FROM profit_withdrawals`;
+  const params = [];
+  if (!isAll) {
+    sql += ` WHERE substr(created_at, 1, 7) = ?`;
+    params.push(monthIn);
+  }
+  sql += ` ORDER BY id DESC LIMIT ?`;
+  params.push(limit);
+  ok(res, db.prepare(sql).all(...params));
+});
+
+// Add one withdrawal record. Body: { amount (USDT, > 0), remark? }
+router.post('/profit-withdrawals', (req, res) => {
+  const amount = num(req.body?.amount, 0);
+  if (!(amount > 0)) return fail(res, 400, 'amount must be > 0');
+  const remark = req.body?.remark ? String(req.body.remark).trim() : null;
+  try {
+    const r = db.prepare(`
+      INSERT INTO profit_withdrawals (amount, remark) VALUES (?, ?)
+    `).run(stats.round2(amount), remark || null);
+    ok(res, { id: r.lastInsertRowid, amount: stats.round2(amount), remark });
+  } catch (e) {
+    fail(res, 500, e.message);
+  }
+});
+
+// Delete one withdrawal record.
+router.delete('/profit-withdrawals/:id', (req, res) => {
+  const id = num(req.params.id);
+  const r = db.prepare(`DELETE FROM profit_withdrawals WHERE id = ?`).run(id);
+  if (!r.changes) return fail(res, 404, 'withdrawal not found');
+  ok(res, { id });
+});
+
 module.exports = router;

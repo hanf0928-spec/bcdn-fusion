@@ -135,6 +135,10 @@ const state = {
   detailTab: 'overview',
   detail: null,    // cached detail of currently-shown customer
   chart: null,
+  // Cached "已提取毛利" summary (lifetime). The overview card uses this
+  // to compute 可提取余额 = 累计毛利 − 已提取，while the raw historical
+  // 累计毛利 is surfaced in the card footer.
+  profitWithdrawn: { total_withdrawn: 0, count: 0, latest_at: null },
 };
 
 // Build the ?month=... query value used by every list endpoint.
@@ -163,9 +167,20 @@ async function loadProviderSummaries() {
   }
 }
 
+async function loadProfitWithdrawn() {
+  // Lifetime summary — we always subtract the *全部历史*已提取 amount from
+  // 累计毛利 (which itself is also lifetime). Month-scoped views keep the
+  // 本月毛利 untouched: withdrawals are not tied to a billing month.
+  try {
+    state.profitWithdrawn = await API.get(`/api/profit-withdrawals/summary?month=all`);
+  } catch (e) {
+    state.profitWithdrawn = { total_withdrawn: 0, count: 0, latest_at: null };
+  }
+}
+
 async function reloadAndRender() {
   try {
-    await Promise.all([loadCustomers(), loadProviderSummaries()]);
+    await Promise.all([loadCustomers(), loadProviderSummaries(), loadProfitWithdrawn()]);
     await renderPage();
   } catch (e) {
     UI.toast('加载失败：' + e.message, 'error');
@@ -232,7 +247,12 @@ function renderOverviewPage(el) {
   const monthProfit      = list.reduce((s, c) => s + Number(c.month_gross_profit  || 0), 0);
   const lowBalance       = list.filter(c => c.low_balance).length;
   const profitClass      = monthProfit >= 0 ? 'text-emerald-600' : 'text-rose-600';
-  const totalProfitClass = totalProfitAll >= 0 ? 'text-emerald-600' : 'text-rose-600';
+  // "累计毛利" card:
+  //   - big number  = 可提取毛利 = 历史总毛利 − 已提取
+  //   - stat-foot   = 历史总毛利（保持不变，让操作员随时对得上账）
+  const totalWithdrawn   = Number((state.profitWithdrawn && state.profitWithdrawn.total_withdrawn) || 0);
+  const availableProfit  = totalProfitAll - totalWithdrawn;
+  const totalProfitClass = availableProfit >= 0 ? 'text-emerald-600' : 'text-rose-600';
 
   el.innerHTML = `
     <section class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -272,9 +292,12 @@ function renderOverviewPage(el) {
         <div class="stat-foot">平台 $${fmt.money(totalPlatformAll)} · 资源 $${fmt.money(totalResourceAll)}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">累计毛利</div>
-        <div class="stat-value num ${totalProfitClass}">$ ${fmt.money(totalProfitAll)} <span class="text-base text-slate-400">USDT</span></div>
-        <div class="stat-foot">${totalRevenueAll > 0 ? `毛利率 ${(totalProfitAll / totalRevenueAll * 100).toFixed(1)}%` : '暂无营收'}</div>
+        <div class="stat-label">
+          累计毛利
+          <button type="button" class="ml-1 align-middle text-[10px] text-teal-700 hover:text-teal-900 underline decoration-dotted" onclick="openProfitWithdrawModal()" title="记录/查看毛利提取">💰 提取</button>
+        </div>
+        <div class="stat-value num ${totalProfitClass}">$ ${fmt.money(availableProfit)} <span class="text-base text-slate-400">USDT</span></div>
+        <div class="stat-foot">历史总毛利 $ ${fmt.money(totalProfitAll)}${totalWithdrawn > 0 ? ` · 已提取 <span class="text-teal-700">$ ${fmt.money(totalWithdrawn)}</span>` : ''}</div>
       </div>
     </section>
 
@@ -1124,7 +1147,7 @@ document.getElementById('form-quick-recharge').addEventListener('submit', async 
 
 /** Re-fetch the data needed for the currently shown page. */
 async function reloadCurrent() {
-  await Promise.all([loadCustomers(), loadProviderSummaries()]);
+  await Promise.all([loadCustomers(), loadProviderSummaries(), loadProfitWithdrawn()]);
   await renderPage();
 }
 
@@ -1153,6 +1176,118 @@ document.getElementById('btn-sync-all').addEventListener('click', async () => {
 
 document.getElementById('btn-provider-costs').addEventListener('click', () => openProviderCostModal());
 document.getElementById('btn-revenue-report').addEventListener('click', () => openRevenueReport());
+document.getElementById('btn-profit-withdraw').addEventListener('click', () => openProfitWithdrawModal());
+
+// ============================================================
+// Profit withdrawal (毛利提取)
+//
+// Bookkeeping-only ledger. `POST /api/profit-withdrawals` inserts a row;
+// the overview page then subtracts SUM(amount) from 累计毛利 to show the
+// 可提取余额, while surfacing the historical 累计毛利 in the card footer.
+// ============================================================
+async function openProfitWithdrawModal() {
+  UI.openModal('modal-profit-withdraw');
+  const form = document.getElementById('form-profit-withdraw');
+  if (form) form.reset();
+  await refreshProfitWithdrawUI();
+  setTimeout(() => {
+    const amt = form && form.amount;
+    if (amt) amt.focus();
+  }, 50);
+}
+
+async function refreshProfitWithdrawUI() {
+  // Always show 全区间 累计毛利 & 已提取 so the picture is consistent no
+  // matter which month the dashboard is currently viewing.
+  const summaryBox = document.getElementById('profit-withdraw-summary');
+  const listBox    = document.getElementById('profit-withdraw-list');
+  if (!summaryBox || !listBox) return;
+
+  // If the customer list isn't loaded yet (e.g. modal opened before boot
+  // finished), fall back to whatever we already have; the totals will
+  // repopulate on next reloadAndRender.
+  const historicalTotal = (state.customers || [])
+    .reduce((s, c) => s + Number(c.total_gross_profit || 0), 0);
+
+  listBox.innerHTML = `<tr><td colspan="4" class="text-center text-slate-400 py-6">加载中…</td></tr>`;
+
+  let summary = state.profitWithdrawn || { total_withdrawn: 0, count: 0, latest_at: null };
+  let list = [];
+  try {
+    [summary, list] = await Promise.all([
+      API.get('/api/profit-withdrawals/summary?month=all'),
+      API.get('/api/profit-withdrawals?limit=200'),
+    ]);
+    state.profitWithdrawn = summary;
+  } catch (e) {
+    UI.toast('加载提取记录失败：' + e.message, 'error');
+    list = [];
+  }
+
+  const withdrawn = Number(summary.total_withdrawn || 0);
+  const available = historicalTotal - withdrawn;
+  const availClass = available >= 0 ? 'text-emerald-600' : 'text-rose-600';
+  const slots = {
+    total:     summaryBox.querySelector('[data-slot=total]'),
+    withdrawn: summaryBox.querySelector('[data-slot=withdrawn]'),
+    available: summaryBox.querySelector('[data-slot=available]'),
+  };
+  if (slots.total)     slots.total.innerHTML     = `$ ${fmt.money(historicalTotal)} <span class="text-base text-slate-400">USDT</span>`;
+  if (slots.withdrawn) slots.withdrawn.innerHTML = `$ ${fmt.money(withdrawn)} <span class="text-base text-slate-400">USDT</span>`;
+  if (slots.available) {
+    slots.available.className = `stat-value num ${availClass}`;
+    slots.available.innerHTML = `$ ${fmt.money(available)} <span class="text-base text-slate-400">USDT</span>`;
+  }
+
+  listBox.innerHTML = list.length
+    ? list.map(r => `
+        <tr class="border-t border-slate-100">
+          <td class="px-4 py-2 text-slate-600">${fmt.esc(r.created_at)}</td>
+          <td class="px-4 py-2 text-right font-semibold num text-teal-700">$ ${fmt.money(r.amount)}</td>
+          <td class="px-4 py-2 text-slate-600">${fmt.esc(r.remark || '—')}</td>
+          <td class="px-4 py-2 text-right"><button class="btn-link btn-danger" onclick="delProfitWithdraw(${r.id})">删除</button></td>
+        </tr>`).join('')
+    : `<tr><td colspan="4" class="text-center text-slate-400 py-6">暂无提取记录</td></tr>`;
+}
+
+async function delProfitWithdraw(id) {
+  if (!confirm('确定删除这条提取记录？删除后可提取余额将回滚。')) return;
+  try {
+    await API.del(`/api/profit-withdrawals/${id}`);
+    UI.toast('已删除');
+    await refreshProfitWithdrawUI();
+    // Also refresh the overview card in the background so the big number
+    // stays in sync when the modal is closed.
+    await loadProfitWithdrawn();
+    if (state.view.type === 'overview') await renderPage();
+  } catch (e) {
+    UI.toast('删除失败：' + e.message, 'error');
+  }
+}
+
+document.getElementById('form-profit-withdraw').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const amount = parseFloat(f.amount.value);
+  if (!(amount > 0)) {
+    UI.toast('请输入有效的提取金额', 'error');
+    return;
+  }
+  try {
+    await API.post('/api/profit-withdrawals', {
+      amount,
+      remark: (f.remark.value || '').trim() || null,
+    });
+    f.reset();
+    UI.toast(`已记录提取：$ ${amount.toFixed(2)} USDT`);
+    await refreshProfitWithdrawUI();
+    // Keep the overview card in sync without closing the modal.
+    await loadProfitWithdrawn();
+    if (state.view.type === 'overview') await renderPage();
+  } catch (err) {
+    UI.toast('提取失败：' + err.message, 'error');
+  }
+});
 
 // ============================================================
 // Provider-cost modal (keyed by provider × scene)
