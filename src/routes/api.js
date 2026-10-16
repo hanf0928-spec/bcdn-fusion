@@ -50,16 +50,20 @@ function maskKey(k) {
   if (s.length <= 12) return s.slice(0, 2) + '***';
   return s.slice(0, 6) + '***' + s.slice(-4);
 }
-/** Convert a customer row for safe outbound use (mask api_key). */
+/**
+ * Convert a customer row for outbound use.
+ * NOTE: api_key / api_key2 are returned in plaintext per product requirement
+ * (Option A). The `*_masked` field names are kept for backward compatibility
+ * with existing front-end code, but now carry the raw key value.
+ */
 function shapeCustomer(c) {
   if (!c) return c;
   const out = { ...c };
-  out.api_key_masked = maskKey(c.api_key);
+  out.api_key_masked = c.api_key || '';
   out.has_api_key = !!c.api_key;
   delete out.api_key;
-  // Secondary key (CCDN only). Mirror the same masked/has-flag pattern so
-  // the UI can render/edit it independently without ever seeing plaintext.
-  out.api_key2_masked = maskKey(c.api_key2);
+  // Secondary key (CCDN only). Same plaintext treatment.
+  out.api_key2_masked = c.api_key2 || '';
   out.has_api_key2 = !!c.api_key2;
   delete out.api_key2;
   // Surface zone_ids as a clean array for the UI; keep null when unset.
