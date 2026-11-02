@@ -703,11 +703,91 @@ router.post('/alerts/check', async (req, res) => {
 // Test TG message (sanity check for bot setup)
 router.post('/alerts/test', async (req, res) => {
   const { sendTelegramMessage } = require('../services/telegram');
-  const chatId = req.body?.chat_id || process.env.TELEGRAM_CHAT_ID;
+  const settings = require('../services/settings');
+  const chatId = req.body?.chat_id || settings.getTelegramChatId();
   const text   = req.body?.text || '✅ BCDN test message - your bot is working.';
   try {
     await sendTelegramMessage(chatId, text);
     ok(res, { sent: true, chat_id: chatId });
+  } catch (e) {
+    fail(res, 500, e.message);
+  }
+});
+
+// =====================================================
+// App settings — Telegram bot credentials
+//
+// Backed by the `app_settings` table so the admin can rotate the Bot
+// Token / default chat_id from the UI without touching .env + restart.
+// A stored value OVERRIDES the matching .env entry; clearing the field
+// (empty string) falls back to the .env value again.
+// =====================================================
+
+/** Mask a Bot token for safe display: keep head 4 + tail 4. */
+function maskToken(t) {
+  if (!t) return '';
+  const s = String(t);
+  if (s.length <= 10) return s.slice(0, 2) + '***';
+  return s.slice(0, 4) + '***' + s.slice(-4);
+}
+
+router.get('/settings/telegram', (req, res) => {
+  const settings = require('../services/settings');
+  const meta = settings.getTelegramMeta();
+  ok(res, {
+    token: {
+      masked:     maskToken(meta.token.value),
+      source:     meta.token.source,     // 'db' | 'env' | 'none'
+      has_db:     meta.token.has_db,
+      has_env:    meta.token.has_env,
+      updated_at: meta.token.updated_at,
+    },
+    chat_id: {
+      value:      meta.chat_id.value,    // chat id is not secret
+      source:     meta.chat_id.source,
+      has_db:     meta.chat_id.has_db,
+      has_env:    meta.chat_id.has_env,
+      updated_at: meta.chat_id.updated_at,
+    },
+  });
+});
+
+/**
+ * Update Telegram settings.
+ * Body (both optional, send only what you want to change):
+ *   {
+ *     token:    string | null,   // null / '' => clear DB override (fall back to .env)
+ *     chat_id:  string | null,   // same semantics
+ *   }
+ * Field OMITTED (undefined) means "don't touch".
+ */
+router.put('/settings/telegram', (req, res) => {
+  const settings = require('../services/settings');
+  const body = req.body || {};
+  try {
+    if (Object.prototype.hasOwnProperty.call(body, 'token')) {
+      settings.setTelegramToken(body.token);
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'chat_id')) {
+      settings.setTelegramChatId(body.chat_id);
+    }
+    const meta = settings.getTelegramMeta();
+    ok(res, {
+      token: {
+        masked:     maskToken(meta.token.value),
+        source:     meta.token.source,
+        has_db:     meta.token.has_db,
+        has_env:    meta.token.has_env,
+        updated_at: meta.token.updated_at,
+      },
+      chat_id: {
+        value:      meta.chat_id.value,
+        source:     meta.chat_id.source,
+        has_db:     meta.chat_id.has_db,
+        has_env:    meta.chat_id.has_env,
+        updated_at: meta.chat_id.updated_at,
+      },
+    });
   } catch (e) {
     fail(res, 500, e.message);
   }

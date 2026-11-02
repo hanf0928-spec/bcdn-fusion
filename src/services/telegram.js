@@ -1,15 +1,19 @@
 'use strict';
 
 const https = require('https');
+const settings = require('./settings');
 
 /**
  * Send a Telegram message via Bot API.
- * Uses the global TELEGRAM_BOT_TOKEN. The chat_id is per-customer or the
- * global TELEGRAM_CHAT_ID fallback.
+ * Token is resolved via `settings.getTelegramToken()` which prefers the
+ * value stored in the `app_settings` table (set from the admin UI) and
+ * falls back to process.env.TELEGRAM_BOT_TOKEN. The chat_id is
+ * per-customer or the global TELEGRAM_CHAT_ID fallback (also resolved
+ * through settings so the UI value wins over env).
  */
 function sendTelegramMessage(chatId, text) {
   return new Promise((resolve, reject) => {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const token = settings.getTelegramToken();
     if (!token) {
       return reject(new Error('TELEGRAM_BOT_TOKEN is not configured'));
     }

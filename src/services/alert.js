@@ -3,6 +3,7 @@
 const db = require('../db');
 const stats = require('./stats');
 const { sendTelegramMessage } = require('./telegram');
+const settings = require('./settings');
 
 const COOLDOWN_MIN = parseInt(process.env.ALERT_COOLDOWN_MIN || '360', 10);
 
@@ -59,7 +60,7 @@ async function checkAndAlert(opts = {}) {
       }
     }
 
-    const chatId = c.tg_chat_id || process.env.TELEGRAM_CHAT_ID;
+    const chatId = c.tg_chat_id || settings.getTelegramChatId();
     const msg = buildAlertMessage(c, s);
 
     try {

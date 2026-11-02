@@ -41,6 +41,9 @@
         <button id="btn-check-alert" class="px-3 py-2 text-sm rounded-lg bg-amber-100 text-amber-800 hover:bg-amber-200 transition">
           ⚡️ 检查告警
         </button>
+        <button id="btn-tg-settings" class="px-3 py-2 text-sm rounded-lg bg-cyan-100 text-cyan-800 hover:bg-cyan-200 transition" title="配置 Telegram Bot Token / 默认 chat_id">
+          📨 TG 设置
+        </button>
         <button id="btn-add-customer" class="px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition shadow-sm">
           + 新建客户
         </button>
@@ -404,6 +407,80 @@
           </table>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ========== Telegram settings modal ========== -->
+  <div id="modal-tg-settings" class="hidden fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-xl overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-semibold">Telegram Bot 设置</h3>
+          <p class="text-xs text-slate-500 mt-0.5">
+            填写后<strong class="text-slate-600">立即生效</strong>，无需重启。留空则回退到 <code class="text-[11px] bg-slate-100 px-1 rounded">.env</code> 中的配置。
+          </p>
+        </div>
+        <button class="text-slate-400 hover:text-slate-600" onclick="UI.closeModal('modal-tg-settings')">✕</button>
+      </div>
+
+      <form id="form-tg-settings" class="px-6 py-5 space-y-4 max-h-[80vh] overflow-y-auto">
+        <!-- current status badges -->
+        <div id="tg-settings-status" class="grid grid-cols-2 gap-3 text-xs">
+          <div class="stat-card !py-3">
+            <div class="stat-label">Bot Token</div>
+            <div class="flex items-center justify-between mt-1">
+              <span data-slot="token-masked" class="font-mono text-slate-700 truncate">—</span>
+              <span data-slot="token-source" class="ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold"></span>
+            </div>
+          </div>
+          <div class="stat-card !py-3">
+            <div class="stat-label">默认 chat_id</div>
+            <div class="flex items-center justify-between mt-1">
+              <span data-slot="chat-value" class="font-mono text-slate-700 truncate">—</span>
+              <span data-slot="chat-source" class="ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold"></span>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">
+            Bot Token
+            <span class="text-slate-400 font-normal">（由 <a href="https://t.me/BotFather" target="_blank" class="text-indigo-600 hover:underline">@BotFather</a> 生成）</span>
+          </label>
+          <input name="token" placeholder="留空 = 不修改；输入 - 一个减号 = 清除并回退 .env"
+                 class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono" />
+          <div class="text-[11px] text-slate-400 mt-1">
+            出于安全考虑，已存储的 token 只做脱敏回显；留空提交不会覆盖，想清除请填 <code class="bg-slate-100 px-1 rounded">-</code>。
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">
+            默认 chat_id
+            <span class="text-slate-400 font-normal">（群通常为 <code class="text-[10px] bg-slate-100 px-1 rounded">-100...</code>；客户若单独设置了 chat_id 则以客户为准）</span>
+          </label>
+          <input name="chat_id" placeholder="-1001234567890 （留空 = 不修改；填 - 清除）"
+                 class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono" />
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+          <label class="block text-xs font-medium text-slate-600 mb-1">发送测试消息</label>
+          <div class="flex gap-2">
+            <input id="tg-test-chat-id" placeholder="chat_id（留空用默认）" class="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono" />
+            <button type="button" id="btn-tg-test-send" class="px-4 py-2 text-sm rounded-lg bg-sky-600 text-white hover:bg-sky-700 whitespace-nowrap">
+              🚀 测试发送
+            </button>
+          </div>
+          <div class="text-[11px] text-slate-400 mt-1">
+            未保存的改动不会用于测试，请先点"保存"再测试。
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-2 border-t border-slate-100">
+          <button type="button" class="px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50" onclick="UI.closeModal('modal-tg-settings')">关闭</button>
+          <button type="submit" class="px-4 py-2 text-sm rounded-lg bg-indigo-600 text-white hover:bg-indigo-700">保存</button>
+        </div>
+      </form>
     </div>
   </div>
 

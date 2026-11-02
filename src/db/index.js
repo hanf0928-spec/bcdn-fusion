@@ -218,6 +218,22 @@ function init() {
       created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
     );
     CREATE INDEX IF NOT EXISTS idx_profit_withdrawals_created ON profit_withdrawals(created_at);
+
+    -- ===========================
+    -- Generic application settings (key/value).
+    --
+    -- Primary use-case today: holds the Telegram Bot credentials
+    -- (telegram_bot_token / telegram_chat_id) so the admin can rotate
+    -- them from the UI without touching .env + restarting the server.
+    --
+    -- When a value is present here it OVERRIDES the matching .env entry;
+    -- empty / NULL value => fall back to process.env.* (legacy behaviour).
+    -- ===========================
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key         TEXT PRIMARY KEY,
+      value       TEXT,
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
   `);
 
   // -------- lightweight migrations for older DBs --------

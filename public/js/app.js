@@ -1177,6 +1177,113 @@ document.getElementById('btn-sync-all').addEventListener('click', async () => {
 document.getElementById('btn-provider-costs').addEventListener('click', () => openProviderCostModal());
 document.getElementById('btn-revenue-report').addEventListener('click', () => openRevenueReport());
 document.getElementById('btn-profit-withdraw').addEventListener('click', () => openProfitWithdrawModal());
+document.getElementById('btn-tg-settings').addEventListener('click', () => openTgSettingsModal());
+
+// ============================================================
+// Telegram settings (Bot Token / default chat_id)
+//
+// Values are persisted in `app_settings` via `/api/settings/telegram`.
+// Convention for the form inputs:
+//   - empty string  → DON'T send the field (keep existing value)
+//   - single "-"    → clear the DB override and fall back to .env
+//   - anything else → store as new override
+// This matches the "留空 = 不修改" / "填 - = 清除" hint shown in the UI.
+// ============================================================
+async function openTgSettingsModal() {
+  UI.openModal('modal-tg-settings');
+  const form = document.getElementById('form-tg-settings');
+  if (form) form.reset();
+  const testInput = document.getElementById('tg-test-chat-id');
+  if (testInput) testInput.value = '';
+  await refreshTgSettingsUI();
+}
+
+function _renderTgStatus(meta) {
+  const root = document.getElementById('tg-settings-status');
+  if (!root) return;
+  const tagClass = (src) => {
+    if (src === 'db')  return 'bg-indigo-100 text-indigo-700';
+    if (src === 'env') return 'bg-amber-100 text-amber-700';
+    return 'bg-slate-200 text-slate-500';
+  };
+  const tagText = (src) => {
+    if (src === 'db')  return '面板';
+    if (src === 'env') return '.env';
+    return '未配置';
+  };
+
+  const tokMask   = root.querySelector('[data-slot="token-masked"]');
+  const tokSrc    = root.querySelector('[data-slot="token-source"]');
+  const chatVal   = root.querySelector('[data-slot="chat-value"]');
+  const chatSrc   = root.querySelector('[data-slot="chat-source"]');
+
+  const tk = meta.token || {};
+  const cc = meta.chat_id || {};
+  if (tokMask) tokMask.textContent = tk.masked || '（未设置）';
+  if (tokSrc)  { tokSrc.textContent  = tagText(tk.source); tokSrc.className  = 'ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold ' + tagClass(tk.source); }
+  if (chatVal) chatVal.textContent = cc.value || '（未设置）';
+  if (chatSrc) { chatSrc.textContent = tagText(cc.source); chatSrc.className = 'ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold ' + tagClass(cc.source); }
+}
+
+async function refreshTgSettingsUI() {
+  try {
+    const meta = await API.get('/api/settings/telegram');
+    _renderTgStatus(meta);
+  } catch (e) {
+    UI.toast('加载 TG 设置失败：' + e.message, 'error');
+  }
+}
+
+/**
+ * Translate a form input value to the API body semantics.
+ *   ''  → undefined (field will be omitted → keep current)
+ *   '-' → null      (clear DB override)
+ *   x   → x
+ */
+function _tgFieldValue(raw) {
+  const s = (raw == null ? '' : String(raw)).trim();
+  if (s === '') return undefined;
+  if (s === '-') return null;
+  return s;
+}
+
+document.getElementById('form-tg-settings').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const body = {};
+  const tok = _tgFieldValue(f.token.value);
+  const chat = _tgFieldValue(f.chat_id.value);
+  if (tok !== undefined)  body.token   = tok;
+  if (chat !== undefined) body.chat_id = chat;
+
+  if (Object.keys(body).length === 0) {
+    UI.toast('无改动', 'info');
+    return;
+  }
+  try {
+    const meta = await API.put('/api/settings/telegram', body);
+    _renderTgStatus(meta);
+    f.token.value = '';
+    f.chat_id.value = '';
+    UI.toast('已保存，当前进程立即生效');
+  } catch (err) {
+    UI.toast('保存失败：' + err.message, 'error');
+  }
+});
+
+document.getElementById('btn-tg-test-send').addEventListener('click', async () => {
+  const chatIdInput = document.getElementById('tg-test-chat-id');
+  const chatId = (chatIdInput && chatIdInput.value.trim()) || '';
+  try {
+    const r = await API.post('/api/alerts/test', {
+      chat_id: chatId || undefined,
+      text: '✅ BCDN 测试：Telegram Bot 配置正常。',
+    });
+    UI.toast(`测试消息已发送 → chat_id=${r.chat_id || '(默认)'}`);
+  } catch (e) {
+    UI.toast('发送失败：' + e.message, 'error');
+  }
+});
 
 // ============================================================
 // Profit withdrawal (毛利提取)
