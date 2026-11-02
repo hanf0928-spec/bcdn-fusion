@@ -863,6 +863,11 @@ function openCustomerModal(id) {
       if (form.zone_ids) {
         form.zone_ids.value = Array.isArray(c.zone_ids) ? c.zone_ids.join(', ') : '';
       }
+      // EO single resource tag.
+      if (form.tag_key)   form.tag_key.value   = c.tag_key   || '';
+      if (form.tag_value) form.tag_value.value = c.tag_value || '';
+      const _tagHint = document.getElementById('eo-tag-hint');
+      if (_tagHint) _tagHint.textContent = '';
       // Backend stores USDT/GB (traffic), USDT/次 (request), USDT/个 (domain);
       // the form asks for USDT/TB, USDT/万次, USDT/个 respectively.
       const priceTrafficGb = Number(c.unit_price_traffic ?? c.unit_price ?? 0);
@@ -928,6 +933,8 @@ function syncProviderFieldsVisibility() {
   const isCcdn = provider === 'source2';
   const rowZone = document.getElementById('row-zone-ids');
   if (rowZone) rowZone.classList.toggle('hidden', !isEO);
+  const rowTag  = document.getElementById('row-eo-tag');
+  if (rowTag)  rowTag.classList.toggle('hidden', !isEO);
   // Secondary API key/user are CCDN-only capabilities. Hide the rows for
   // other providers so operators don't accidentally fill them (the backend
   // would store them, but sync wouldn't consume them).
@@ -947,6 +954,46 @@ document.querySelector('#form-customer [name=provider]')
 // Toggle scene-specific fields (e.g. CN2 min-commit) on scene change.
 const _sceneSel = document.querySelector('#form-customer [name=scene]');
 if (_sceneSel) _sceneSel.addEventListener('change', syncProviderFieldsVisibility);
+
+// "测试标签解析" button — only meaningful when editing an existing EO
+// customer (we need the saved SecretId/SecretKey to call Tencent Cloud).
+// Calls POST /api/customers/:id/eo/resolve-tag with the CURRENT tag_key /
+// tag_value typed in the form (not necessarily the saved ones) so the
+// operator can experiment before clicking save.
+const _btnResolveTag = document.getElementById('btn-eo-resolve-tag');
+if (_btnResolveTag) {
+  _btnResolveTag.addEventListener('click', async () => {
+    const form = document.getElementById('form-customer');
+    const hint = document.getElementById('eo-tag-hint');
+    if (!form) return;
+    const id = form.id && form.id.value;
+    if (!id) {
+      if (hint) hint.textContent = '请先保存客户（需要调用腾讯云需要 SecretId/Key）';
+      return;
+    }
+    const tk = (form.tag_key   && form.tag_key.value   || '').trim();
+    const tv = (form.tag_value && form.tag_value.value || '').trim();
+    if (!tk || !tv) {
+      if (hint) hint.textContent = '请先填写标签 Key 与 Value';
+      return;
+    }
+    if (hint) hint.textContent = '解析中…';
+    _btnResolveTag.disabled = true;
+    try {
+      const r = await API.post(`/api/customers/${id}/eo/resolve-tag`, { tag_key: tk, tag_value: tv });
+      const preview = (r.preview || []).join(', ');
+      const trunc   = r.truncated ? '（仅显示前 50 个）' : '';
+      if (hint) {
+        hint.innerHTML = `命中 <b>${r.zone_count}</b> 个站点${trunc}` +
+          (preview ? `<div class="mt-1 text-slate-400 font-mono text-[11px] break-all">${preview}</div>` : '');
+      }
+    } catch (e) {
+      if (hint) hint.innerHTML = `<span class="text-rose-500">解析失败：${(e && e.message) || e}</span>`;
+    } finally {
+      _btnResolveTag.disabled = false;
+    }
+  });
+}
 
 document.getElementById('form-customer').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1005,6 +1052,11 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
   if (f.provider.value === 'eo') {
     const raw = (f.zone_ids && f.zone_ids.value || '').trim();
     payload.zone_ids = raw ? raw.split(/[,\s]+/).filter(Boolean) : [];
+    // Single EO resource tag (key=value). Empty => null (clear).
+    const tk = (f.tag_key   && f.tag_key.value   || '').trim();
+    const tv = (f.tag_value && f.tag_value.value || '').trim();
+    payload.tag_key   = tk || null;
+    payload.tag_value = tv || null;
   }
   // For update, only send api_key if user typed a new value
   if (!editing || apiKeyVal) payload.api_key = apiKeyVal || null;

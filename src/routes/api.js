@@ -68,6 +68,9 @@ function shapeCustomer(c) {
   delete out.api_key2;
   // Surface zone_ids as a clean array for the UI; keep null when unset.
   out.zone_ids = parseZoneIdsField(c.zone_ids);
+  // EO single resource tag (both fields are plain strings; empty => null).
+  out.tag_key   = c.tag_key   || null;
+  out.tag_value = c.tag_value || null;
   return out;
 }
 
@@ -148,6 +151,7 @@ router.post('/customers', (req, res) => {
   const {
     name, contact, remark,
     provider, api_key, api_key2, api_user, api_user2, api_base_url, zone_ids,
+    tag_key, tag_value,
     unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
     alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
@@ -175,11 +179,12 @@ router.post('/customers', (req, res) => {
     const r = db.prepare(`
       INSERT INTO customers
         (name, contact, remark, provider, scene, api_key, api_key2, api_user, api_user2, api_base_url, zone_ids,
+         tag_key, tag_value,
          unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
          alert_threshold, tg_chat_id, status,
          traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
          min_commit_gb)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       String(name).trim(),
       contact || null,
@@ -196,6 +201,10 @@ router.post('/customers', (req, res) => {
       (api_user2 && String(api_user2).trim()) ? String(api_user2).trim() : null,
       api_base_url || null,
       normalizeZoneIdsForStorage(zone_ids),
+      // EO resource tag (single pair). Store as plain text; both empty => NULL
+      // so the sync driver cleanly falls back to zone_ids or "*".
+      (typeof tag_key   === 'string' && tag_key.trim())   ? tag_key.trim()   : null,
+      (typeof tag_value === 'string' && tag_value.trim()) ? tag_value.trim() : null,
       priceTraffic,       // legacy unit_price mirror
       priceTraffic,
       priceRequest,
@@ -224,6 +233,7 @@ router.put('/customers/:id', (req, res) => {
   const {
     name, contact, remark,
     provider, api_key, api_key2, api_user, api_user2, api_base_url, zone_ids,
+    tag_key, tag_value,
     unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
     alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
@@ -255,6 +265,14 @@ router.put('/customers/:id', (req, res) => {
   const nextZoneIds = (zone_ids === undefined)
     ? c.zone_ids
     : normalizeZoneIdsForStorage(zone_ids);
+
+  // EO resource tag (single pair): undefined keeps; empty/null clears; else trim.
+  const nextTagKey = (tag_key === undefined)
+    ? c.tag_key
+    : ((typeof tag_key === 'string' && tag_key.trim()) ? tag_key.trim() : null);
+  const nextTagValue = (tag_value === undefined)
+    ? c.tag_value
+    : ((typeof tag_value === 'string' && tag_value.trim()) ? tag_value.trim() : null);
 
   // Calibration knobs: undefined keeps current; non-undefined coerces to a
   // safe number (0 fallback, pct clamped to a sane range).
@@ -306,6 +324,8 @@ router.put('/customers/:id', (req, res) => {
       api_user2 = ?,
       api_base_url = ?,
       zone_ids = ?,
+      tag_key = ?,
+      tag_value = ?,
       unit_price = ?,
       unit_price_traffic = ?,
       unit_price_request = ?,
@@ -331,6 +351,8 @@ router.put('/customers/:id', (req, res) => {
     nextApiUser2,
     (api_base_url === undefined) ? c.api_base_url : (api_base_url || null),
     nextZoneIds,
+    nextTagKey,
+    nextTagValue,
     nextPriceTraffic,   // legacy unit_price mirror
     nextPriceTraffic,
     nextPriceRequest,
@@ -443,6 +465,54 @@ router.get('/sync/logs', (req, res) => {
   if (cid) { sql += ` WHERE s.customer_id = ?`; params.push(cid); }
   sql += ` ORDER BY s.id DESC LIMIT 100`;
   ok(res, db.prepare(sql).all(...params));
+});
+
+// =====================================================
+// EO tag -> zone-ids preview
+//
+// Resolves a (tag_key, tag_value) pair into a concrete list of EO zone-ids
+// without actually touching the billing API. Useful for the "测试标签解析"
+// button in the customer editor: operators can verify their tag matches
+// at least one zone before saving.
+//
+// Request body (optional overrides; falls back to stored customer fields):
+//   { tag_key?: string, tag_value?: string }
+// =====================================================
+router.post('/customers/:id/eo/resolve-tag', async (req, res) => {
+  const id = num(req.params.id);
+  const c  = db.prepare(`SELECT * FROM customers WHERE id = ?`).get(id);
+  if (!c) return fail(res, 404, 'customer not found');
+  if ((c.provider || 'source1') !== 'eo') {
+    return fail(res, 400, 'customer provider is not EO');
+  }
+  if (!c.api_key || !c.api_user) {
+    return fail(res, 400, 'customer api_user (SecretId) + api_key (SecretKey) are required');
+  }
+  const tagKey   = (req.body?.tag_key   ?? c.tag_key   ?? '').toString().trim();
+  const tagValue = (req.body?.tag_value ?? c.tag_value ?? '').toString().trim();
+  if (!tagKey || !tagValue) {
+    return fail(res, 400, 'tag_key and tag_value are both required');
+  }
+  try {
+    const { resolveZoneIdsByTag } = require('../services/providers/eoTag');
+    const zoneIds = await resolveZoneIdsByTag({
+      apiKey:  c.api_key,
+      apiUser: c.api_user,
+      tagKey,
+      tagValue,
+    });
+    ok(res, {
+      tag_key:    tagKey,
+      tag_value:  tagValue,
+      zone_count: zoneIds.length,
+      // Cap preview at 50 ids to keep responses small; operators only need
+      // a sanity check, not the full list.
+      preview:    zoneIds.slice(0, 50),
+      truncated:  zoneIds.length > 50,
+    });
+  } catch (e) {
+    fail(res, 500, e.message);
+  }
 });
 
 // =====================================================

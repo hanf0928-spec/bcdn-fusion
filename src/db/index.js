@@ -318,6 +318,16 @@ function init() {
   // the two cron slots (28th intra-month + 1st final settlement).
   ensureColumn('customers', 'min_commit_gb',                `REAL NOT NULL DEFAULT 0`);
 
+  // EO-only: single resource tag (TagKey=TagValue) bound to the customer.
+  // When both are present, sync.js asks tag.tencentcloudapi.com /
+  // DescribeResourcesByTags (ServiceType='teo', ResourcePrefix='zone') to
+  // resolve the matching zone-ids, then passes them to the EO billing
+  // API in <=100-id batches. This is how we achieve "按标签分客户计费"
+  // despite DescribeBillingData not supporting tag filters natively.
+  // Both empty => fall back to the legacy `zone_ids` field (or "*").
+  ensureColumn('customers', 'tag_key',   `TEXT`);
+  ensureColumn('customers', 'tag_value', `TEXT`);
+
   // Make sure every (provider, scene) combo has a cost row (zeros until configured).
   const seedSceneCost = db.prepare(`
     INSERT OR IGNORE INTO scene_costs (provider, scene, platform_cost_ratio, traffic_unit_price, request_unit_price, domain_unit_price)

@@ -90,6 +90,9 @@ async function syncCustomer(customer, opts = {}) {
         apiUser:  creds[0].apiUser,
         baseUrl:  customer.api_base_url || undefined,
         zoneIds:  parseZoneIds(customer.zone_ids),
+        tagKey:   customer.tag_key   || undefined,
+        tagValue: customer.tag_value || undefined,
+        scene:    customer.scene     || 'download',
         startDate,
         endDate,
       });
@@ -105,6 +108,9 @@ async function syncCustomer(customer, opts = {}) {
             apiUser:  creds[i].apiUser,
             baseUrl:  customer.api_base_url || undefined,
             zoneIds:  parseZoneIds(customer.zone_ids),
+            tagKey:   customer.tag_key   || undefined,
+            tagValue: customer.tag_value || undefined,
+            scene:    customer.scene     || 'download',
             startDate,
             endDate,
           });

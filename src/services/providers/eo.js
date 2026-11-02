@@ -50,23 +50,44 @@
 const https = require('https');
 const crypto = require('crypto');
 const { URL } = require('url');
+const { resolveZoneIdsByTag } = require('./eoTag');
 
 const DEFAULT_BASE   = process.env.EO_BASE_URL  || 'https://teo.tencentcloudapi.com';
 const DEFAULT_REGION = process.env.EO_REGION    || ''; // EO is account-level; region is optional
 const TC_SERVICE     = 'teo';
-const TC_ACTION      = 'DescribeBillingData';
+// Action is overridable via env so that migrating to a future flavour of
+// the billing endpoint (e.g. DescribeBillingDataPro) only needs a .env
+// change rather than a code change — provided the request/response shape
+// stays compatible.
+const TC_ACTION      = process.env.EO_ACTION || 'DescribeBillingData';
 const TC_VERSION     = '2022-09-01';
 // Comma-separated list of MetricName values to sum. The legacy single
 // `EO_METRIC` env var is honoured for backwards compatibility.
-const TC_METRICS = parseMetrics(
+const TC_METRICS_DEFAULT = parseMetrics(
   process.env.EO_METRICS || process.env.EO_METRIC || 'acc_flux,smt_flux'
 );
+// Per-scene metric overrides (optional). Each env var is comma-separated.
+// Falls back to TC_METRICS_DEFAULT (acc_flux + smt_flux) when unset — the
+// documented default across download / vod / cn2.
+const TC_METRICS_BY_SCENE = {
+  download: parseMetrics(process.env.EO_METRICS_DOWNLOAD) ,
+  vod:      parseMetrics(process.env.EO_METRICS_VOD),
+  cn2:      parseMetrics(process.env.EO_METRICS_CN2),
+};
 function parseMetrics(s) {
   return String(s || '')
     .split(/[,\s]+/)
     .map(x => x.trim())
     .filter(Boolean);
 }
+function metricsForScene(scene) {
+  const key = String(scene || 'download').toLowerCase();
+  const list = TC_METRICS_BY_SCENE[key];
+  return (Array.isArray(list) && list.length) ? list : TC_METRICS_DEFAULT;
+}
+// EO's DescribeBillingData hard-caps ZoneIds at 100 per request. We slice
+// larger zone lists into chunks of this size and merge daily series.
+const ZONE_IDS_PER_BATCH = 100;
 const TC_INTERVAL    = 'day';
 const TZ_OFFSET      = '+08:00';                 // Asia/Shanghai
 const BYTES_PER_GB   = 1e9;                      // SI base, matches source1/source2
@@ -81,6 +102,15 @@ const BYTES_PER_GB   = 1e9;                      // SI base, matches source1/sou
  * @param {string} cfg.startDate    'YYYY-MM-DD' inclusive (Asia/Shanghai)
  * @param {string} cfg.endDate      'YYYY-MM-DD' inclusive (Asia/Shanghai)
  * @param {string[]} [cfg.zoneIds]  Optional list of zone-ids. Defaults to ['*'] (all zones).
+ * @param {string}   [cfg.tagKey]   Optional resource tag key. When both tagKey+tagValue
+ *                                  are provided, we resolve the (key,value) pair into a
+ *                                  concrete list of zone-ids via tag.tencentcloudapi.com
+ *                                  and use that INSTEAD of cfg.zoneIds — i.e. the tag
+ *                                  takes priority. This is how we achieve per-customer
+ *                                  billing scoping on a shared tencent account.
+ * @param {string}   [cfg.tagValue] See cfg.tagKey.
+ * @param {string}   [cfg.scene]    Business scenario ('download' | 'vod' | 'cn2'); drives
+ *                                  which MetricName list is summed. Default = 'download'.
  * @returns {Promise<Array<{usage_date:string, traffic_gb:number}>>}
  */
 async function fetchDailyTraffic(cfg) {
@@ -89,45 +119,82 @@ async function fetchDailyTraffic(cfg) {
   if (!cfg.startDate || !cfg.endDate) throw new Error('eo: startDate/endDate required');
 
   const baseUrl = normalizeBase(cfg.baseUrl);
-  const zoneIds = (Array.isArray(cfg.zoneIds) && cfg.zoneIds.length) ? cfg.zoneIds : ['*'];
+  const metrics = metricsForScene(cfg.scene);
 
-  // EO limits any single request to a 31-day window. Slice the requested
-  // range into <=30-day chunks so callers can ask for arbitrary ranges.
-  const chunks = chunkDateRange(cfg.startDate, cfg.endDate, 30);
+  // 1) Resolve ZoneIds. Priority:
+  //    (a) tag_key + tag_value  → resolve via tag.tencentcloudapi.com (dedup + preserve order)
+  //    (b) explicit zoneIds     → use as-is
+  //    (c) neither              → fall back to ["*"] (all zones under the account)
+  let zoneIds;
+  const hasTag = cfg.tagKey && cfg.tagValue
+    && String(cfg.tagKey).trim() && String(cfg.tagValue).trim();
+  if (hasTag) {
+    const resolved = await resolveZoneIdsByTag({
+      apiKey:   cfg.apiKey,
+      apiUser:  cfg.apiUser,
+      tagKey:   String(cfg.tagKey).trim(),
+      tagValue: String(cfg.tagValue).trim(),
+    });
+    if (!resolved.length) {
+      throw new Error(
+        `eo: no zones matched tag "${cfg.tagKey}=${cfg.tagValue}" — ` +
+        `check the tag is applied to EO zones under this account`
+      );
+    }
+    zoneIds = resolved;
+  } else if (Array.isArray(cfg.zoneIds) && cfg.zoneIds.length) {
+    zoneIds = cfg.zoneIds;
+  } else {
+    zoneIds = ['*'];
+  }
+
+  // 2) EO caps a single DescribeBillingData request at 100 ZoneIds. Slice
+  //    into batches so an arbitrarily large tag match still works.
+  //    (The "*" wildcard is intentionally not batched — it's a single id
+  //    that stands for "the whole account".)
+  const zoneBatches = (zoneIds.length === 1 && zoneIds[0] === '*')
+    ? [zoneIds]
+    : chunkArray(zoneIds, ZONE_IDS_PER_BATCH);
+
+  // 3) Each request also has a 31-day window cap. Slice the date range
+  //    into <=30-day chunks so callers can ask for arbitrary ranges.
+  const dateChunks = chunkDateRange(cfg.startDate, cfg.endDate, 30);
 
   const merged = new Map();    // 'YYYY-MM-DD' -> bytes (sum)
   const errors = [];
   let okCount = 0;
 
-  for (const [from, to] of chunks) {
-    try {
-      // Run one metric at a time. EO/Tencent Cloud's edge sometimes RSTs
-      // a connection when several signed POSTs hit it in the same TCP
-      // window, surfacing as `socket hang up`. Sequential calls + a
-      // small jitter between chunks are friendlier and just as fast for
-      // our 1~3 metric setup.
-      for (const metric of TC_METRICS) {
-        const dataPoints = await callOneWindowWithRetry({
-          baseUrl,
-          secretId:  cfg.apiUser,
-          secretKey: cfg.apiKey,
-          startTime: `${from}T00:00:00${TZ_OFFSET}`,
-          endTime:   `${to}T23:59:59${TZ_OFFSET}`,
-          zoneIds,
-          metric,
-        });
-        for (const p of dataPoints) {
-          const day = chinaDateOf(p.Time);
-          if (!day) continue;
-          merged.set(day, (merged.get(day) || 0) + Number(p.Value || 0));
+  for (const batch of zoneBatches) {
+    for (const [from, to] of dateChunks) {
+      try {
+        // Run one metric at a time. EO/Tencent Cloud's edge sometimes RSTs
+        // a connection when several signed POSTs hit it in the same TCP
+        // window, surfacing as `socket hang up`. Sequential calls + a
+        // small jitter between chunks are friendlier and just as fast for
+        // our 1~3 metric setup.
+        for (const metric of metrics) {
+          const dataPoints = await callOneWindowWithRetry({
+            baseUrl,
+            secretId:  cfg.apiUser,
+            secretKey: cfg.apiKey,
+            startTime: `${from}T00:00:00${TZ_OFFSET}`,
+            endTime:   `${to}T23:59:59${TZ_OFFSET}`,
+            zoneIds:   batch,
+            metric,
+          });
+          for (const p of dataPoints) {
+            const day = chinaDateOf(p.Time);
+            if (!day) continue;
+            merged.set(day, (merged.get(day) || 0) + Number(p.Value || 0));
+          }
         }
+        okCount++;
+      } catch (e) {
+        errors.push(`[${from}~${to}] zones=${batch.length}: ${e.message}`);
       }
-      okCount++;
-    } catch (e) {
-      errors.push(`[${from}~${to}] ${e.message}`);
+      // tiny breather between chunks (skip after the last one)
+      await sleep(150);
     }
-    // tiny breather between chunks (skip after the last one)
-    await sleep(150);
   }
 
   if (okCount === 0 && errors.length) {
@@ -140,6 +207,13 @@ async function fetchDailyTraffic(cfg) {
       traffic_gb: round4(bytes / BYTES_PER_GB),
     }))
     .sort((a, b) => a.usage_date.localeCompare(b.usage_date));
+}
+
+/** Split an array into chunks of `size` (last chunk may be shorter). */
+function chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
 /**
@@ -351,4 +425,4 @@ function httpPostJSON(url, body, headers) {
   });
 }
 
-module.exports = { fetchDailyTraffic, name: 'eo' };
+module.exports = { fetchDailyTraffic, resolveZoneIdsByTag, name: 'eo' };
