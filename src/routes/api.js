@@ -425,7 +425,12 @@ router.post('/recompute/all', (req, res) => {
 // Sync (pull traffic from upstream provider)
 // =====================================================
 
-// Sync one customer
+// Sync one customer.
+// Body: { start_date?, end_date?, full? }
+//   full = true → full-reset sync: re-pull from FULL_SYNC_START_DATE
+//   (default 2026-03-01) to today, wipe the window and rewrite every row
+//   with the customer's CURRENT config (this is what the UI "立即同步"
+//   button sends).
 router.post('/customers/:id/sync', async (req, res) => {
   const id = num(req.params.id);
   const c = db.prepare(`SELECT * FROM customers WHERE id = ?`).get(id);
@@ -434,6 +439,7 @@ router.post('/customers/:id/sync', async (req, res) => {
     const r = await sync.syncCustomer(c, {
       startDate: req.body?.start_date,
       endDate:   req.body?.end_date,
+      full:      req.body?.full === true,
     });
     ok(res, r);
   } catch (e) {
@@ -441,12 +447,14 @@ router.post('/customers/:id/sync', async (req, res) => {
   }
 });
 
-// Sync everyone
+// Sync everyone (same body semantics as the per-customer endpoint, so
+// { full: true } full-resets every active customer).
 router.post('/sync/all', async (req, res) => {
   try {
     const r = await sync.syncAll({
       startDate: req.body?.start_date,
       endDate:   req.body?.end_date,
+      full:      req.body?.full === true,
     });
     ok(res, r);
   } catch (e) {

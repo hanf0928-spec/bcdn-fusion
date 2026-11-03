@@ -112,8 +112,8 @@ If `ADMIN_TOKEN` is set, send it via the `x-admin-token` header.
 | `POST` | `/api/customers`               | Create customer (incl. provider/api_key) |
 | `PUT`  | `/api/customers/:id`           | Update — empty `api_key` keeps the existing one |
 | `DEL`  | `/api/customers/:id`           | Delete (cascades) |
-| `POST` | `/api/customers/:id/sync`      | Pull traffic from upstream `{start_date?, end_date?}` |
-| `POST` | `/api/sync/all`                | Pull every active customer |
+| `POST` | `/api/customers/:id/sync`      | Pull traffic from upstream `{start_date?, end_date?, full?}` — `full: true` = full-reset sync (see below) |
+| `POST` | `/api/sync/all`                | Pull every active customer (same body, incl. `full`) |
 | `GET`  | `/api/sync/logs?customer_id=:id` | Sync history |
 | `GET`  | `/api/customers/:id/recharges` | List recharges |
 | `POST` | `/api/customers/:id/recharges` | Add recharge `{amount, method, remark}` |
@@ -141,6 +141,35 @@ Manually trigger from the UI (*🔄 Sync all* / *⚡️ Check alerts*) or:
 ```bash
 curl -X POST http://localhost:3000/api/sync/all  -H 'x-admin-token: ...'
 curl -X POST http://localhost:3000/api/alerts/check -H 'x-admin-token: ...'
+```
+
+---
+
+## 🔄 立即同步 = 全量重置同步
+
+客户页的 **🔄 立即同步** 不是增量补数，而是**全量重置**：
+
+1. **窗口** = `FULL_SYNC_START_DATE`（默认 `2026-03-01`，见 `.env`）~ 今天。
+2. **先清空**该窗口内该客户的 `usage_records`，再用上游最新拉取的数据重写
+   —— 上游已不再返回的天、以及手工改过的行都会被清掉，而不是叠加残留。
+3. **按当前最新配置重刷全部账单**：写入时使用客户当前的三档单价与流量校准
+   （百分比 / 绝对值 / 基准月份），写完后还会对**该客户全部历史行**
+   （含窗口之外）按当前单价重新盖章，保证没有残留旧价。
+4. **安全**：清库 + 写入在同一个事务里，并且发生**在上游拉取成功之后**——
+   上游失败时不会动任何已有数据。
+5. **域名峰值保留**：域名按月 `MAX(domain_count) × 单价` 计费，重置不会让
+   今天的快照把历史已观测到的月峰值抹低，也不会凭空抬高。
+
+可观测性：返回值 `{ full, startDate, endDate, days, traffic_gb,
+reset_deleted, recomputed_rows }`，同时写一条 `sync_logs` 记录
+（`full-reset: cleared N rows, restamped M rows @current config`）。
+
+单个客户：
+
+```bash
+curl -X POST http://localhost:3000/api/customers/1/sync \
+  -H 'x-admin-token: ...' -H 'content-type: application/json' \
+  -d '{"full": true}'
 ```
 
 ---

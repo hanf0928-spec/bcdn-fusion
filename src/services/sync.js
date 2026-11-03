@@ -42,6 +42,17 @@ function parseZoneIds(raw) {
  * @param {string} [opts.startDate] YYYY-MM-DD
  *   (default: env SYNC_DEFAULT_DAYS days ago, otherwise 1st of current month)
  * @param {string} [opts.endDate]   YYYY-MM-DD (default = today)
+ * @param {boolean} [opts.full]     Full-reset sync (UI "立即同步").
+ *   - window defaults to FULL_SYNC_START_DATE (default 2026-03-01) ~ today,
+ *     i.e. the customer's whole history, instead of the incremental default;
+ *   - every usage_records row inside that window is DELETED and rewritten
+ *     from a fresh upstream pull, so stale / manually edited days are wiped
+ *     instead of being merged on top of;
+ *   - after the rewrite, ALL rows of the customer (including days outside
+ *     the window) are re-stamped with the CURRENT config (three-mode
+ *     prices), i.e. "按当前最新配置重置全量数据".
+ *   A failed upstream pull never wipes anything: the delete + insert happen
+ *   in a single transaction AFTER the fetch succeeded.
  */
 async function syncCustomer(customer, opts = {}) {
   if (!customer) throw new Error('customer is required');
@@ -49,7 +60,8 @@ async function syncCustomer(customer, opts = {}) {
   if (!driver) throw new Error(`unknown provider: ${customer.provider}`);
   if (!customer.api_key) throw new Error(`customer "${customer.name}" has no api_key`);
 
-  const startDate = opts.startDate || defaultStartDate();
+  const isFull    = opts.full === true;
+  const startDate = opts.startDate || (isFull ? fullSyncStartDate() : defaultStartDate());
   const endDate   = opts.endDate   || today();
 
   // ---- Fetch daily traffic --------------------------------------------
@@ -264,7 +276,38 @@ async function syncCustomer(customer, opts = {}) {
 
   const domainTag = domainCountOk ? `,domains=${domainCount}` : '';
 
+  // Full-reset mode: capture each month's historical domain-count peak
+  // BEFORE wiping the window. Monthly domain billing uses
+  // MAX(domain_count) × domain price, and a reset must not let today's
+  // (possibly lower) snapshot silently shrink a month's already-observed
+  // peak — nor must it invent a peak that was never observed. Keeping the
+  // recorded month peak as a floor preserves both guarantees.
+  const domainPeakByMonth = new Map();
+  if (isFull) {
+    const peaks = db.prepare(`
+      SELECT substr(usage_date, 1, 7) AS m, MAX(domain_count) AS d
+      FROM usage_records
+      WHERE customer_id = ? AND usage_date >= ? AND usage_date <= ?
+      GROUP BY substr(usage_date, 1, 7)
+    `).all(customer.id, startDate, endDate);
+    for (const p of peaks) domainPeakByMonth.set(p.m, Number(p.d) || 0);
+  }
+
+  let resetDeleted = 0;   // rows wiped by a full reset (this window only)
+
   const tx = db.transaction((items) => {
+    // Full reset: wipe the whole window first so days the upstream no
+    // longer returns (or that were hand-edited) disappear instead of
+    // lingering next to the fresh pull. Runs inside the transaction, after
+    // the fetch succeeded — an upstream failure therefore never destroys
+    // existing data.
+    if (isFull) {
+      resetDeleted = db.prepare(`
+        DELETE FROM usage_records
+        WHERE customer_id = ? AND usage_date >= ? AND usage_date <= ?
+      `).run(customer.id, startDate, endDate).changes;
+    }
+
     // Snapshot the customer's current three-mode pricing. request_count is
     // still 0 (upstream lacks the endpoint). domain_count reflects the
     // peak observed this month: the upsert keeps MAX(existing, current
@@ -286,11 +329,13 @@ async function syncCustomer(customer, opts = {}) {
       // request_fee is 0 today (request_count is 0). domain_fee is NOT in
       // amount — billed monthly by MAX(domain_count) × price.
       const amount = trafficFee;
+      const monthKey = String(it.usage_date || '').slice(0, 7);
+      const dc = Math.max(domainCount, Number(domainPeakByMonth.get(monthKey) || 0));
       upsert.run(
         customer.id,
         it.usage_date,
         trafficR,
-        domainCount,
+        dc,
         pT, pT, pR, pD,
         trafficFee,
         amount,
@@ -298,11 +343,19 @@ async function syncCustomer(customer, opts = {}) {
       );
       totalTraffic += trafficR;
     }
+    return resetDeleted;
   });
-  tx(rows);
+  resetDeleted = tx(rows);
 
   db.prepare(`UPDATE customers SET last_sync_at = datetime('now','localtime') WHERE id = ?`)
     .run(customer.id);
+
+  // Full reset also means "按当前最新配置重置全量数据": re-stamp EVERY row
+  // of this customer (including days outside the sync window, e.g. hand-made
+  // records before FULL_SYNC_START_DATE) with the CURRENT three-mode prices,
+  // so no row keeps a stale price snapshot.
+  let recomputed = null;
+  if (isFull) recomputed = stats.recomputeUsageAmounts(customer.id);
 
   const adjMsgParts = [];
   if (Math.abs(adjPct) > 1e-9) {
@@ -329,6 +382,9 @@ async function syncCustomer(customer, opts = {}) {
   if (customer.provider === 'eo' && rows && rows.__eo_wildcard) {
     suffixBits.push('⚠️ EO ZoneIds=["*"] fallback — configure tag or zone_ids!');
   }
+  if (isFull) {
+    suffixBits.push(`full-reset: cleared ${resetDeleted} rows, restamped ${recomputed ? recomputed.rows : 0} rows @current config`);
+  }
   const logMsg = suffixBits.length
     ? `${startDate} ~ ${endDate} (${suffixBits.join('; ')})`
     : `${startDate} ~ ${endDate}`;
@@ -340,6 +396,9 @@ async function syncCustomer(customer, opts = {}) {
     startDate, endDate,
     days: rows.length,
     traffic_gb: stats.round4(totalTraffic),
+    full:        isFull,
+    reset_deleted:   isFull ? resetDeleted : 0,
+    recomputed_rows: recomputed ? recomputed.rows : 0,
   };
 }
 
@@ -398,6 +457,18 @@ function defaultStartDate() {
   const n = parseInt(process.env.SYNC_DEFAULT_DAYS, 10);
   if (Number.isFinite(n) && n > 0) return daysAgo(n);
   return firstDayOfMonth();
+}
+/**
+ * Start date of a FULL-reset sync ("立即同步" in the UI): the earliest day
+ * we ever re-pull for a customer. Configurable via FULL_SYNC_START_DATE;
+ * defaults to 2026-03-01 (business-go-live month). A malformed value falls
+ * back to the default instead of producing a garbage upstream window.
+ */
+function fullSyncStartDate() {
+  const FALLBACK = '2026-03-01';
+  const raw = String(process.env.FULL_SYNC_START_DATE || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return FALLBACK;
+  return raw > today() ? FALLBACK : raw;
 }
 
 module.exports = { syncCustomer, syncAll };

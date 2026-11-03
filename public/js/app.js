@@ -497,7 +497,7 @@ async function renderCustomerPage(el, id) {
           <button class="px-3 py-1.5 text-xs rounded-lg bg-emerald-600 text-white hover:bg-emerald-700" onclick="openRechargeModal(${c.id})">
             ＋ 充值
           </button>
-          <button class="px-3 py-1.5 text-xs rounded-lg bg-sky-600 text-white hover:bg-sky-700" onclick="syncCustomer(${c.id})">
+          <button class="px-3 py-1.5 text-xs rounded-lg bg-sky-600 text-white hover:bg-sky-700" onclick="syncCustomer(${c.id})" title="从起始日期（默认 2026-03-01）至今全量重拉流量，清空区间旧记录并按当前最新配置重写全部账单">
             🔄 立即同步
           </button>
           <button class="px-3 py-1.5 text-xs rounded-lg bg-violet-100 text-violet-800 hover:bg-violet-200" onclick="recomputeCustomer(${c.id})" title="按当前单价重算所有历史账单与余额">
@@ -1102,11 +1102,31 @@ async function deleteCustomer(id, name) {
 // ============================================================
 // Sync / alert / per-customer actions
 // ============================================================
+/**
+ * 「立即同步」= 全量重置同步。
+ * 从系统配置的起始日期（默认 2026-03-01，服务端 FULL_SYNC_START_DATE）到今天
+ * 重新拉取该客户全部流量：窗口内旧记录先清空再用上游最新数据重写，随后按客户
+ * 当前最新配置（三档单价 / 流量校准）重刷全部历史行。
+ */
 async function syncCustomer(id) {
-  UI.toast('同步已启动…', 'info');
+  const name = (state.detail?.c?.id === id && state.detail.c.name)
+    || (state.customers || []).find(c => c.id === id)?.name
+    || `客户 #${id}`;
+  if (!confirm(
+    `将对「${name}」执行全量同步：\n\n` +
+    `· 重新拉取起始日期（默认 2026-03-01）至今的全部流量；\n` +
+    `· 清空该区间原有记录后用最新数据重写；\n` +
+    `· 按当前最新配置重刷该客户全部账单（单价 / 校准）。\n\n` +
+    `区间较长，可能需要几十秒，确定继续？`
+  )) return;
+  UI.toast('全量同步已启动，正在拉取历史流量…', 'info');
   try {
-    const r = await API.post(`/api/customers/${id}/sync`, {});
-    UI.toast(`已同步 ${r.days} 天，${(Number(r.traffic_gb || 0) / GB_PER_TB).toFixed(4)} TB`);
+    const r = await API.post(`/api/customers/${id}/sync`, { full: true });
+    UI.toast(
+      `已全量同步 ${r.days} 天（${fmt.esc(r.startDate)} ~ ${fmt.esc(r.endDate)}），` +
+      `${(Number(r.traffic_gb || 0) / GB_PER_TB).toFixed(4)} TB；` +
+      `重置 ${r.reset_deleted || 0} 条、按当前配置重刷 ${r.recomputed_rows || 0} 条`
+    );
     await reloadCurrent();
     await loadCustomers();
     renderTopTabs();
