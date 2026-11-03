@@ -126,6 +126,7 @@ async function fetchDailyTraffic(cfg) {
   //    (b) explicit zoneIds     → use as-is
   //    (c) neither              → fall back to ["*"] (all zones under the account)
   let zoneIds;
+  let fellBackToWildcard = false;
   const hasTag = cfg.tagKey && cfg.tagValue
     && String(cfg.tagKey).trim() && String(cfg.tagValue).trim();
   if (hasTag) {
@@ -145,7 +146,24 @@ async function fetchDailyTraffic(cfg) {
   } else if (Array.isArray(cfg.zoneIds) && cfg.zoneIds.length) {
     zoneIds = cfg.zoneIds;
   } else {
+    // Wildcard fallback: pulls the WHOLE account. This is correct for a
+    // one-customer-per-tenant deployment, but DANGEROUS when the EO
+    // account is shared across customers — the resulting billing figure
+    // mixes everyone's traffic into one record and dramatically over-
+    // bills whoever triggered the sync. Loudly warn so the mis-config is
+    // visible both in-process (console) and later in sync_logs (via the
+    // returned flag below). See 2026-11-02 "客户=604" incident where a
+    // tag-less legacy run polluted the record with 164 GB of other
+    // customers' traffic.
     zoneIds = ['*'];
+    fellBackToWildcard = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[eo] WARNING: no tag_key/tag_value AND no zone_ids configured — ' +
+      'falling back to ZoneIds=["*"] which pulls the ENTIRE account. ' +
+      'This is almost certainly wrong on a shared tenant. ' +
+      'Configure a resource tag or an explicit zone_ids list to scope the query.'
+    );
   }
 
   // 2) EO caps a single DescribeBillingData request at 100 ZoneIds. Slice
@@ -201,12 +219,21 @@ async function fetchDailyTraffic(cfg) {
     throw new Error(errors.join(' | '));
   }
 
-  return Array.from(merged.entries())
+  const rows = Array.from(merged.entries())
     .map(([usage_date, bytes]) => ({
       usage_date,
       traffic_gb: round4(bytes / BYTES_PER_GB),
     }))
     .sort((a, b) => a.usage_date.localeCompare(b.usage_date));
+
+  // Surface the wildcard-fallback flag on the first row's meta slot so
+  // the caller (sync.js) can trace it into sync_logs without changing the
+  // long-stable return shape. Consumers that only care about traffic_gb
+  // simply ignore the extra property.
+  if (fellBackToWildcard && rows.length) {
+    Object.defineProperty(rows, '__eo_wildcard', { value: true, enumerable: false });
+  }
+  return rows;
 }
 
 /** Split an array into chunks of `size` (last chunk may be shorter). */

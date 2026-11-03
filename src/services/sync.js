@@ -323,6 +323,12 @@ async function syncCustomer(customer, opts = {}) {
   const suffixBits = [];
   if (adjMsgParts.length) suffixBits.push(`adj ${adjMsgParts.join(' ')}`);
   if (keyMsgParts.length) suffixBits.push(keyMsgParts.join(' '));
+  // EO wildcard-fallback warning (set by eo.js when zoneIds collapses to
+  // ["*"]). This loudly flags the mis-config that produced the 2026-11-02
+  // "客户=604" over-bill (164 GB of other customers' traffic merged in).
+  if (customer.provider === 'eo' && rows && rows.__eo_wildcard) {
+    suffixBits.push('⚠️ EO ZoneIds=["*"] fallback — configure tag or zone_ids!');
+  }
   const logMsg = suffixBits.length
     ? `${startDate} ~ ${endDate} (${suffixBits.join('; ')})`
     : `${startDate} ~ ${endDate}`;
@@ -366,8 +372,13 @@ function logSync(customer, ok, days, trafficGb, message) {
 }
 
 function today() {
+  // Local-date formatting (NOT toISOString). Using UTC here produces the
+  // previous day between CST 00:00~08:00 (UTC-16:00~24:00 of the prior
+  // day), which silently truncates the cron sync window and leaves the
+  // first-run of the day with a missing record. We format against local
+  // time so this holds regardless of the host timezone.
   const d = new Date();
-  return d.toISOString().slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 function firstDayOfMonth() {
   const d = new Date();
