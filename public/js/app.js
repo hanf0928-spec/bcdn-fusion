@@ -337,11 +337,21 @@ function renderOverviewPage(el) {
   `;
 }
 
+function statusBadgeHtml(status) {
+  if (status === 'active')     return `<span class="badge badge-green">启用</span>`;
+  if (status === 'terminated') return `<span class="badge badge-red">已清退</span>`;
+  return `<span class="badge badge-slate">停用</span>`;
+}
+function statusLabel(status) {
+  if (status === 'active')     return '启用';
+  if (status === 'terminated') return '已清退';
+  return '停用';
+}
+
 function overviewRow(c) {
+  const isTerminated = c.status === 'terminated';
   const lowBadge   = c.low_balance ? `<span class="badge badge-red ml-2">余额不足</span>` : '';
-  const statusBadge = c.status === 'active'
-    ? `<span class="badge badge-green">启用</span>`
-    : `<span class="badge badge-slate">停用</span>`;
+  const statusBadge = statusBadgeHtml(c.status);
   const providerBadge = `<span class="badge badge-slate">${fmt.esc(PROVIDER_LABEL[c.provider] || c.provider || '—')}</span>`;
   const sceneBadge = `<span class="badge badge-slate">${fmt.esc(SCENE_LABEL[c.scene] || c.scene || '下载')}</span>`;
   const monthRevenue = Number(c.month_revenue ?? c.month_amount ?? 0);
@@ -366,7 +376,7 @@ function overviewRow(c) {
       <td class="px-4 py-4 text-right num font-semibold ${c.low_balance ? 'text-rose-600' : 'text-slate-900'}">$ ${fmt.money(c.balance)}</td>
       <td class="px-4 py-4 text-center text-xs text-slate-500">$ ${fmt.money(c.alert_threshold)}</td>
       <td class="px-4 py-4 text-right whitespace-nowrap">
-        <button class="btn-link text-emerald-700 hover:bg-emerald-50" onclick="openRechargeModal(${c.id})">+ 充值</button>
+        ${isTerminated ? '' : `<button class="btn-link text-emerald-700 hover:bg-emerald-50" onclick="openRechargeModal(${c.id})">+ 充值</button>`}
         <button class="btn-link" onclick="goCustomer(${c.id})">打开</button>
         <button class="btn-link" onclick="openCustomerModal(${c.id})">编辑</button>
         <button class="btn-link btn-danger" onclick="deleteCustomer(${c.id}, '${fmt.esc(c.name)}')">删除</button>
@@ -477,6 +487,18 @@ async function renderCustomerPage(el, id) {
     ? `<span class="font-mono text-slate-600">${fmt.esc(c.api_key_masked)}</span>${c.has_api_key2 ? ' <span class="badge badge-slate ml-1" title="已配置双 API Key（CCDN 备用）">🔑×2</span>' : ''}`
     : `<span class="text-rose-600">未配置</span>`;
 
+  const isTerminated = c.status === 'terminated';
+  const lowBal = !isTerminated && c.balance < c.alert_threshold;
+  const terminatedBanner = isTerminated ? `
+      <div class="mt-4 px-4 py-3 rounded-lg bg-rose-50 border border-rose-200 text-sm text-rose-800 flex flex-wrap gap-x-6 gap-y-1">
+        <span class="font-semibold">该客户已清退</span>
+        <span>清退时间：${fmt.esc(c.terminated_at || '—')}</span>
+        <span>清退时余额：$ ${fmt.money(c.terminate_balance)} USDT</span>
+        <span>已退款：<strong class="num">$ ${fmt.money(c.terminate_refund)}</strong> USDT</span>
+        ${Number(c.terminate_balance) < 0 ? `<span>欠款未结：$ ${fmt.money(-Number(c.terminate_balance))} USDT</span>` : ''}
+        ${c.terminate_remark ? `<span class="basis-full text-rose-700">备注：${fmt.esc(c.terminate_remark)}</span>` : ''}
+      </div>` : '';
+
   el.innerHTML = `
     <!-- Header card -->
     <section class="bg-white border border-slate-200 rounded-xl p-5 mb-6">
@@ -484,16 +506,17 @@ async function renderCustomerPage(el, id) {
         <div>
           <div class="flex items-center gap-2 flex-wrap">
             <h2 class="text-xl font-bold tracking-tight">${fmt.esc(c.name)}</h2>
-            <span class="badge ${c.status === 'active' ? 'badge-green' : 'badge-slate'}">${c.status === 'active' ? '启用' : '停用'}</span>
+            ${statusBadgeHtml(c.status)}
             <span class="badge badge-slate">${fmt.esc(PROVIDER_LABEL[c.provider] || c.provider || '—')}</span>
             <span class="badge badge-slate">${fmt.esc(SCENE_LABEL[c.scene] || c.scene || '下载')}</span>
-            ${c.balance < c.alert_threshold ? `<span class="badge badge-red">余额不足</span>` : ''}
+            ${lowBal ? `<span class="badge badge-red">余额不足</span>` : ''}
           </div>
           <div class="text-xs text-slate-500 mt-1">
             ${fmt.esc(c.contact || '—')} · API Key：${apiKeyShown} · 最近同步：${lastSync}
           </div>
         </div>
         <div class="flex flex-wrap gap-2">
+          ${isTerminated ? '' : `
           <button class="px-3 py-1.5 text-xs rounded-lg bg-emerald-600 text-white hover:bg-emerald-700" onclick="openRechargeModal(${c.id})">
             ＋ 充值
           </button>
@@ -502,19 +525,24 @@ async function renderCustomerPage(el, id) {
           </button>
           <button class="px-3 py-1.5 text-xs rounded-lg bg-violet-100 text-violet-800 hover:bg-violet-200" onclick="recomputeCustomer(${c.id})" title="按当前单价重算所有历史账单与余额">
             🧮 重算账单
-          </button>
+          </button>`}
           <button class="px-3 py-1.5 text-xs rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200" onclick="openCustomerModal(${c.id})">
             ⚙️ 设置
           </button>
+          ${isTerminated ? '' : `
           <button class="px-3 py-1.5 text-xs rounded-lg bg-amber-100 text-amber-800 hover:bg-amber-200" onclick="checkAlertOne(${c.id}, false)">
             ⚡️ 检查告警
           </button>
+          <button class="px-3 py-1.5 text-xs rounded-lg bg-rose-100 text-rose-700 hover:bg-rose-200" onclick="openTerminateModal(${c.id})" title="结清并退回剩余余额，标记客户为已清退">
+            🚪 客户清退
+          </button>`}
         </div>
       </div>
+      ${terminatedBanner}
 
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
         <div class="stat-card"><div class="stat-label">余额</div>
-          <div class="stat-value num ${c.balance < c.alert_threshold ? 'text-rose-600' : ''}">$ ${fmt.money(c.balance)} <span class="text-base text-slate-400">USDT</span></div>
+          <div class="stat-value num ${lowBal ? 'text-rose-600' : ''}">$ ${fmt.money(c.balance)} <span class="text-base text-slate-400">USDT</span></div>
           <div class="stat-foot">阈值 $ ${fmt.money(c.alert_threshold)} USDT</div></div>
         <div class="stat-card"><div class="stat-label">累计充值</div>
           <div class="stat-value num">$ ${fmt.money(c.total_recharge)} <span class="text-base text-slate-400">USDT</span></div></div>
@@ -594,7 +622,7 @@ function renderDetailOverview(el) {
           <div class="flex justify-between"><dt class="text-slate-500">业务场景</dt><dd>${fmt.esc(SCENE_LABEL[c.scene] || c.scene || '下载')}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">API 用户名</dt><dd class="font-mono text-xs">${fmt.esc(c.api_user || '（无）')}${c.api_user2 ? ` <span class="text-slate-400">/ 备用：${fmt.esc(c.api_user2)}</span>` : ''}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">API 基础地址</dt><dd class="font-mono text-xs text-right break-all">${fmt.esc(c.api_base_url || '（默认）')}</dd></div>
-          <div class="flex justify-between"><dt class="text-slate-500">状态</dt><dd>${c.status === 'active' ? '启用' : '停用'}</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">状态</dt><dd>${statusLabel(c.status)}</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">客户单价</dt><dd class="num text-right text-xs">
             $${fmt.pricePerTB(c.unit_price_traffic ?? c.unit_price)} /TB ·
             $${fmt.pricePerWan(c.unit_price_request)} /万次 ·
@@ -756,9 +784,12 @@ function renderUsage(el) {
 
 // ----- recharges tab -----
 function renderRecharges(el) {
-  const { recharges } = state.detail;
+  const { c, recharges } = state.detail;
+  const isTerminated = c && c.status === 'terminated';
   el.innerHTML = `
-    <form id="form-recharge" class="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 flex flex-wrap items-end gap-3">
+    ${isTerminated
+      ? `<div class="bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2 mb-4 text-sm">客户已清退，不能再充值，记录不可删除。</div>`
+      : `<form id="form-recharge" class="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 flex flex-wrap items-end gap-3">
       <div><label class="block text-xs text-slate-500 mb-1">金额（USDT） *</label>
         <input name="amount" type="number" step="0.01" min="0.01" required class="px-3 py-2 border border-slate-300 rounded-lg text-sm w-32" /></div>
       <div><label class="block text-xs text-slate-500 mb-1">充值方式</label>
@@ -766,7 +797,7 @@ function renderRecharges(el) {
       <div class="flex-1 min-w-[200px]"><label class="block text-xs text-slate-500 mb-1">备注</label>
         <input name="remark" class="px-3 py-2 border border-slate-300 rounded-lg text-sm w-full" /></div>
       <button class="px-4 py-2 text-sm rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">+ 新增充值</button>
-    </form>
+    </form>`}
     <table class="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
       <thead class="bg-slate-50 text-xs text-slate-500 uppercase">
         <tr><th class="text-left px-4 py-2">时间</th>
@@ -776,18 +807,23 @@ function renderRecharges(el) {
             <th class="text-right px-4 py-2">操作</th></tr>
       </thead>
       <tbody>
-        ${recharges.map(r => `
-          <tr class="border-t border-slate-100">
+        ${recharges.map(r => {
+          const isRefund = r.method === 'refund';
+          return `
+          <tr class="border-t border-slate-100 ${isRefund ? 'bg-rose-50/40' : ''}">
             <td class="px-4 py-2 text-slate-600">${fmt.esc(r.created_at)}</td>
-            <td class="px-4 py-2 text-right font-semibold num text-emerald-700">$ ${fmt.money(r.amount)}</td>
-            <td class="px-4 py-2">${fmt.esc(r.method || '—')}</td>
+            <td class="px-4 py-2 text-right font-semibold num ${Number(r.amount) < 0 ? 'text-rose-600' : 'text-emerald-700'}">${Number(r.amount) < 0 ? '−' : ''}$ ${fmt.money(Math.abs(Number(r.amount)))}</td>
+            <td class="px-4 py-2">${isRefund ? '<span class="badge badge-red">清退退款</span>' : fmt.esc(r.method || '—')}</td>
             <td class="px-4 py-2 text-slate-600">${fmt.esc(r.remark || '—')}</td>
-            <td class="px-4 py-2 text-right"><button class="btn-link btn-danger" onclick="delRecharge(${r.id})">删除</button></td>
-          </tr>`).join('') || `<tr><td colspan="5" class="text-center text-slate-400 py-6">暂无充值记录</td></tr>`}
+            <td class="px-4 py-2 text-right">${isTerminated ? '<span class="text-slate-300">—</span>' : `<button class="btn-link btn-danger" onclick="delRecharge(${r.id})">删除</button>`}</td>
+          </tr>`;
+        }).join('') || `<tr><td colspan="5" class="text-center text-slate-400 py-6">暂无充值记录</td></tr>`}
       </tbody>
     </table>
   `;
-  document.getElementById('form-recharge').addEventListener('submit', async (e) => {
+  const formRecharge = document.getElementById('form-recharge');
+  if (!formRecharge) return;
+  formRecharge.addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = e.target;
     try {
@@ -1214,6 +1250,60 @@ document.getElementById('form-quick-recharge').addEventListener('submit', async 
     await reloadAndRender();
   } catch (err) {
     UI.toast('充值失败：' + err.message, 'error');
+  }
+});
+
+// ----- Customer termination (客户清退) -----
+async function openTerminateModal(customerId) {
+  const f = document.getElementById('form-terminate');
+  f.reset();
+  f.customer_id.value = customerId;
+  const summary = document.getElementById('terminate-summary');
+  summary.innerHTML = `<div class="col-span-3 text-slate-400">加载余额中…</div>`;
+  document.getElementById('terminate-customer-name').textContent = '';
+  UI.openModal('modal-terminate');
+  try {
+    const p = await API.get(`/api/customers/${customerId}/terminate/preview`);
+    document.getElementById('terminate-customer-name').textContent = p.name;
+    const cell = (label, val, cls = '') =>
+      `<div class="bg-slate-50 border border-slate-200 rounded-lg px-2 py-2">
+         <div class="text-slate-500">${label}</div>
+         <div class="num font-semibold ${cls}">$ ${fmt.money(val)}</div></div>`;
+    summary.innerHTML =
+      cell('累计充值', p.total_recharge) +
+      cell('累计消费', p.total_revenue) +
+      cell('应退余额', p.refund_amount, 'text-rose-600') +
+      (p.arrears > 0
+        ? `<div class="col-span-3 text-amber-700">客户当前欠款 $ ${fmt.money(p.arrears)}，清退不退款，欠款将记录在清退信息中。</div>`
+        : `<div class="col-span-3 text-slate-400">以上为当前数据；若勾选「先同步」，将以同步后的最终余额为准。</div>`);
+  } catch (e) {
+    summary.innerHTML = `<div class="col-span-3 text-rose-600">加载失败：${fmt.esc(e.message)}</div>`;
+  }
+}
+
+document.getElementById('form-terminate').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const id = parseInt(f.customer_id.value, 10);
+  if (!id) return;
+  const name = document.getElementById('terminate-customer-name').textContent || `客户 #${id}`;
+  if (!confirm(`确认清退「${name}」并退回剩余余额？此操作不可撤销。`)) return;
+  const btn = f.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    const r = await API.post(`/api/customers/${id}/terminate`, {
+      sync_first: f.sync_first.checked,
+      remark: f.remark.value.trim() || null,
+    });
+    UI.closeModal('modal-terminate');
+    UI.toast(r.arrears > 0
+      ? `已清退，客户欠款 $ ${fmt.money(r.arrears)}，未退款`
+      : `已清退，退款 $ ${fmt.money(r.refund_amount)} USDT，余额已归零`);
+    await reloadAndRender();
+  } catch (err) {
+    UI.toast('清退失败：' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
   }
 });
 
@@ -1889,6 +1979,7 @@ window.testTGForCustomer     = testTGForCustomer;
 window.syncCustomer          = syncCustomer;
 window.recomputeCustomer     = recomputeCustomer;
 window.openRechargeModal     = openRechargeModal;
+window.openTerminateModal    = openTerminateModal;
 window.openProviderCostModal = openProviderCostModal;
 window.openRevenueReport     = openRevenueReport;
 window.UI                    = UI;

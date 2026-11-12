@@ -320,6 +320,46 @@
     </div>
   </div>
 
+  <!-- ========== Customer termination (清退) modal ========== -->
+  <div id="modal-terminate" class="hidden fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        <h3 class="text-base font-semibold text-rose-700">客户清退</h3>
+        <button class="text-slate-400 hover:text-slate-600" onclick="UI.closeModal('modal-terminate')">✕</button>
+      </div>
+      <form id="form-terminate" class="px-6 py-5 space-y-4">
+        <input type="hidden" name="customer_id" />
+
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">客户</label>
+          <div id="terminate-customer-name" class="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium text-slate-700"></div>
+        </div>
+
+        <div id="terminate-summary" class="grid grid-cols-3 gap-2 text-xs"></div>
+
+        <label class="flex items-start gap-2 text-sm text-slate-700">
+          <input type="checkbox" name="sync_first" checked class="mt-0.5" />
+          <span>清退前先同步最新流量<span class="block text-xs text-slate-400">推荐：确保未入账的流量先扣费，再按最终余额退款。上游已不可用时可取消勾选。</span></span>
+        </label>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">清退备注</label>
+          <textarea name="remark" rows="2" maxlength="500" placeholder="例如：退款至原 USDT 地址 / 合同到期" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"></textarea>
+        </div>
+
+        <div class="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 leading-relaxed">
+          清退后：余额将以一笔「退款」记录退回（余额归零），客户标记为<strong>已清退</strong>，
+          停止同步 / 告警 / 保底结算，不可再充值、改账或重算。此操作不可撤销。
+        </div>
+
+        <div class="flex justify-end gap-2 pt-2">
+          <button type="button" class="px-4 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50" onclick="UI.closeModal('modal-terminate')">取消</button>
+          <button type="submit" class="px-4 py-2 text-sm rounded-lg bg-rose-600 text-white hover:bg-rose-700">确认清退并退款</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- ========== Provider cost-config modal ========== -->
   <div id="modal-provider-costs" class="hidden fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-white rounded-xl shadow-xl w-full max-w-6xl overflow-hidden">

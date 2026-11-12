@@ -211,7 +211,7 @@ router.post('/customers', (req, res) => {
       priceDomain,
       num(alert_threshold, 0),
       tg_chat_id || null,
-      status || 'active',
+      (status === 'disabled') ? 'disabled' : 'active',
       clampPct(num(traffic_adjust_pct, 0)),
       num(traffic_adjust_delta_gb, 0),
       anchorMonthIn === undefined ? null : anchorMonthIn,
@@ -359,7 +359,12 @@ router.put('/customers/:id', (req, res) => {
     nextPriceDomain,
     num(alert_threshold, c.alert_threshold),
     tg_chat_id ?? c.tg_chat_id,
-    status || c.status,
+    // A terminated (清退) customer can't be flipped back via a plain edit —
+    // its balance has already been refunded. Likewise 'terminated' can only
+    // be reached through POST /customers/:id/terminate (which refunds).
+    c.status === 'terminated'
+      ? 'terminated'
+      : ((status === 'active' || status === 'disabled') ? status : c.status),
     nextAdjPct,
     nextAdjDelta,
     nextAnchorMonth,
@@ -374,7 +379,8 @@ router.put('/customers/:id', (req, res) => {
     || Math.abs(nextPriceRequest - Number(c.unit_price_request || 0)) > 1e-9
     || Math.abs(nextPriceDomain  - Number(c.unit_price_domain  || 0)) > 1e-9;
   let recomputed = null;
-  if (priceChanged) {
+  // Terminated customers: settled & refunded — never re-bill history.
+  if (priceChanged && c.status !== 'terminated') {
     recomputed = stats.recomputeUsageAmounts(id);
   }
 
@@ -409,16 +415,125 @@ router.delete('/customers/:id', (req, res) => {
 // Recompute usage_records.amount for ONE customer using current unit_price
 router.post('/customers/:id/recompute', (req, res) => {
   const id = num(req.params.id);
-  const c = db.prepare(`SELECT id FROM customers WHERE id = ?`).get(id);
+  const c = db.prepare(`SELECT id, status FROM customers WHERE id = ?`).get(id);
   if (!c) return fail(res, 404, 'customer not found');
+  if (c.status === 'terminated') return fail(res, 400, '客户已清退，账单已结清，不能重算');
   const r = stats.recomputeUsageAmounts(id);
   ok(res, r);
 });
 
-// Recompute usage_records.amount for ALL customers
+// Recompute usage_records.amount for ALL customers (terminated customers
+// are skipped — their bills are settled and refunded).
 router.post('/recompute/all', (req, res) => {
-  const r = stats.recomputeUsageAmounts(null);
-  ok(res, r);
+  const ids = db.prepare(`SELECT id FROM customers WHERE status <> 'terminated'`).all();
+  let rows = 0;
+  for (const { id } of ids) rows += stats.recomputeUsageAmounts(id).rows;
+  ok(res, { customers: ids.length, rows });
+});
+
+// =====================================================
+// Customer termination (客户清退)
+//
+// Settles the customer and refunds the remaining balance:
+//   1. (optional, default on) final sync of the customer's latest traffic,
+//      so we don't refund money for usage that hasn't been pulled yet;
+//   2. compute balance = Σ recharges − revenue;
+//   3. in ONE transaction: insert a negative `recharges` row
+//      (method='refund') for max(0, balance) → derived balance becomes 0;
+//      flip status to 'terminated' and snapshot the settlement fields.
+//
+// The status guard is re-checked inside the transaction so two concurrent
+// requests can never double-refund.
+//
+// Body: { sync_first?: boolean (default true), remark?: string }
+// =====================================================
+
+// Preview: what a termination would refund right now (no side effects).
+router.get('/customers/:id/terminate/preview', (req, res) => {
+  const id = num(req.params.id);
+  const c = db.prepare(`SELECT id, name, status FROM customers WHERE id = ?`).get(id);
+  if (!c) return fail(res, 404, 'customer not found');
+  const s = stats.getCustomerStats(id);
+  ok(res, {
+    id: c.id,
+    name: c.name,
+    status: c.status,
+    balance: s.balance,
+    total_recharge: s.totalRecharge,
+    total_revenue: s.totalRevenue,
+    refund_amount: stats.round2(Math.max(0, s.balance)),
+    arrears: stats.round2(Math.max(0, -s.balance)),
+  });
+});
+
+router.post('/customers/:id/terminate', async (req, res) => {
+  const id = num(req.params.id);
+  const c = db.prepare(`SELECT * FROM customers WHERE id = ?`).get(id);
+  if (!c) return fail(res, 404, 'customer not found');
+  if (c.status === 'terminated') return fail(res, 400, 'customer already terminated');
+
+  const remark = req.body?.remark ? String(req.body.remark).trim().slice(0, 500) : null;
+  const syncFirst = req.body?.sync_first !== false;
+
+  // 1) Final sync (incremental default window). A failure aborts the
+  //    termination so we never refund against stale usage; the operator
+  //    can retry with sync_first=false if the upstream is permanently gone.
+  let syncResult = null;
+  if (syncFirst && c.api_key) {
+    try {
+      syncResult = await sync.syncCustomer(c);
+    } catch (e) {
+      return fail(res, 502, `清退前最终同步失败：${e.message}（可取消"清退前先同步"后重试）`);
+    }
+  }
+
+  // 2+3) Settle atomically.
+  let result;
+  try {
+    result = db.transaction(() => {
+      const cur = db.prepare(`SELECT status FROM customers WHERE id = ?`).get(id);
+      if (!cur) throw Object.assign(new Error('customer not found'), { http: 404 });
+      if (cur.status === 'terminated') {
+        throw Object.assign(new Error('customer already terminated'), { http: 400 });
+      }
+
+      const s = stats.getCustomerStats(id);
+      const balance = stats.round2(s.balance);
+      const refund  = stats.round2(Math.max(0, balance));
+
+      let refundId = null;
+      if (refund > 0) {
+        refundId = db.prepare(`
+          INSERT INTO recharges (customer_id, amount, method, remark)
+          VALUES (?, ?, 'refund', ?)
+        `).run(id, -refund, `客户清退退款${remark ? '：' + remark : ''}`).lastInsertRowid;
+      }
+
+      db.prepare(`
+        UPDATE customers SET
+          status            = 'terminated',
+          terminated_at     = datetime('now','localtime'),
+          terminate_refund  = ?,
+          terminate_balance = ?,
+          terminate_remark  = ?,
+          updated_at        = datetime('now','localtime')
+        WHERE id = ?
+      `).run(refund, balance, remark, id);
+
+      return {
+        id,
+        balance_before: balance,
+        refund_amount:  refund,
+        arrears:        stats.round2(Math.max(0, -balance)),
+        refund_recharge_id: refundId,
+        balance_after:  stats.getCustomerStats(id).balance,
+      };
+    })();
+  } catch (e) {
+    return fail(res, e.http || 500, e.message);
+  }
+
+  ok(res, { ...result, synced: syncResult });
 });
 
 // =====================================================
@@ -435,6 +550,7 @@ router.post('/customers/:id/sync', async (req, res) => {
   const id = num(req.params.id);
   const c = db.prepare(`SELECT * FROM customers WHERE id = ?`).get(id);
   if (!c) return fail(res, 404, 'customer not found');
+  if (c.status === 'terminated') return fail(res, 400, '客户已清退，不能再同步');
   try {
     const r = await sync.syncCustomer(c, {
       startDate: req.body?.start_date,
@@ -594,8 +710,9 @@ router.get('/customers/:id/recharges', (req, res) => {
 // Add recharge
 router.post('/customers/:id/recharges', (req, res) => {
   const id = num(req.params.id);
-  const c = db.prepare(`SELECT id FROM customers WHERE id = ?`).get(id);
+  const c = db.prepare(`SELECT id, status FROM customers WHERE id = ?`).get(id);
   if (!c) return fail(res, 404, 'customer not found');
+  if (c.status === 'terminated') return fail(res, 400, '客户已清退，不能再充值');
 
   const amount = num(req.body?.amount, 0);
   if (amount <= 0) return fail(res, 400, 'amount must be > 0');
@@ -611,6 +728,15 @@ router.post('/customers/:id/recharges', (req, res) => {
 // Delete recharge
 router.delete('/recharges/:rid', (req, res) => {
   const rid = num(req.params.rid);
+  // A refund row of a terminated customer is the settlement itself —
+  // deleting it would resurrect a balance on a closed account.
+  const row = db.prepare(`
+    SELECT r.id, r.method, c.status
+    FROM recharges r LEFT JOIN customers c ON c.id = r.customer_id
+    WHERE r.id = ?
+  `).get(rid);
+  if (!row) return fail(res, 404, 'recharge not found');
+  if (row.status === 'terminated') return fail(res, 400, '客户已清退，充值/退款记录不可删除');
   const r = db.prepare(`DELETE FROM recharges WHERE id = ?`).run(rid);
   if (!r.changes) return fail(res, 404, 'recharge not found');
   ok(res, { id: rid });
@@ -639,6 +765,7 @@ router.post('/customers/:id/usage', (req, res) => {
   const id = num(req.params.id);
   const c = db.prepare(`SELECT * FROM customers WHERE id = ?`).get(id);
   if (!c) return fail(res, 404, 'customer not found');
+  if (c.status === 'terminated') return fail(res, 400, '客户已清退，不能再写入用量');
 
   const usage_date = req.body?.usage_date;
   if (!usage_date || !/^\d{4}-\d{2}-\d{2}$/.test(usage_date)) {
@@ -712,6 +839,13 @@ router.post('/customers/:id/usage', (req, res) => {
 // Delete a single usage record
 router.delete('/usage/:uid', (req, res) => {
   const uid = num(req.params.uid);
+  const row = db.prepare(`
+    SELECT u.id, c.status
+    FROM usage_records u LEFT JOIN customers c ON c.id = u.customer_id
+    WHERE u.id = ?
+  `).get(uid);
+  if (!row) return fail(res, 404, 'usage record not found');
+  if (row.status === 'terminated') return fail(res, 400, '客户已清退，用量记录不可删除');
   const r = db.prepare(`DELETE FROM usage_records WHERE id = ?`).run(uid);
   if (!r.changes) return fail(res, 404, 'usage record not found');
   ok(res, { id: uid });

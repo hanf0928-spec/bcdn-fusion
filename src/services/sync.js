@@ -56,6 +56,9 @@ function parseZoneIds(raw) {
  */
 async function syncCustomer(customer, opts = {}) {
   if (!customer) throw new Error('customer is required');
+  if (customer.status === 'terminated') {
+    throw new Error(`customer "${customer.name}" has been terminated (已清退), sync is disabled`);
+  }
   const driver = PROVIDERS[customer.provider || 'source1'];
   if (!driver) throw new Error(`unknown provider: ${customer.provider}`);
   if (!customer.api_key) throw new Error(`customer "${customer.name}" has no api_key`);

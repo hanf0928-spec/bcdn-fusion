@@ -765,7 +765,7 @@ function listCustomersWithStats(month) {
       total_resource_cost:  s.totalResourceCost,
       total_gross_profit:   s.totalGrossProfit,
       balance:              s.balance,
-      low_balance:          s.balance < c.alert_threshold,
+      low_balance:          c.status !== 'terminated' && s.balance < c.alert_threshold,
       platform_cost_ratio:  cost.platform,
       traffic_unit_price:   cost.traffic,
       request_unit_price:   cost.request,

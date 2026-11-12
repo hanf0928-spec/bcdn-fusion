@@ -99,6 +99,19 @@ API keys are stored only on the server; the UI shows them masked
 
 ---
 
+## 🚪 客户清退
+
+客户页 **🚪 客户清退**：
+
+1. （默认）先做一次最终同步，确保未入账流量先扣费；上游失败则中止清退（可取消勾选后重试）。
+2. 计算余额 `Σ recharges − 营收`，在**同一事务**中写入一笔负数充值记录
+   （`method='refund'`，金额 = `max(0, 余额)`），余额归零；欠款客户不退款，欠款记录在清退信息中。
+3. 客户标记 `status='terminated'`，并记录 `terminated_at / terminate_refund / terminate_balance / terminate_remark`。
+4. 清退后：停止同步 / 告警 / CN2 保底结算；拒绝充值、手工用量、删除用量/充值记录、重算账单；
+   编辑客户不能把状态改回启用。事务内二次校验状态，防止并发重复退款。
+
+---
+
 ## 🌐 REST API
 
 All endpoints respond with `{ "ok": true|false, "data"|"error": ... }`.
@@ -112,6 +125,8 @@ If `ADMIN_TOKEN` is set, send it via the `x-admin-token` header.
 | `POST` | `/api/customers`               | Create customer (incl. provider/api_key) |
 | `PUT`  | `/api/customers/:id`           | Update — empty `api_key` keeps the existing one |
 | `DEL`  | `/api/customers/:id`           | Delete (cascades) |
+| `GET`  | `/api/customers/:id/terminate/preview` | 清退预览：当前余额 / 应退金额 / 欠款（无副作用） |
+| `POST` | `/api/customers/:id/terminate` | 客户清退 `{sync_first?=true, remark?}`：退回剩余余额并标记 `status='terminated'` |
 | `POST` | `/api/customers/:id/sync`      | Pull traffic from upstream `{start_date?, end_date?, full?}` — `full: true` = full-reset sync (see below) |
 | `POST` | `/api/sync/all`                | Pull every active customer (same body, incl. `full`) |
 | `GET`  | `/api/sync/logs?customer_id=:id` | Sync history |

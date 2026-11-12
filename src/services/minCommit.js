@@ -74,6 +74,9 @@ function settleForMonth(customerId, month, mode) {
     FROM customers WHERE id = ?
   `).get(customerId);
   if (!c) return null;
+  // Terminated (清退) customers are fully settled & refunded — never add
+  // a new commit fee afterwards, or the balance would go negative again.
+  if (c.status === 'terminated') return null;
 
   // Eligibility gate: CN2 scene + positive commitment. We deliberately
   // still settle 'disabled' customers so that closing an account mid-

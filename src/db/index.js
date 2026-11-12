@@ -48,7 +48,7 @@ function init() {
       alert_threshold REAL    NOT NULL DEFAULT 0,
       -- Per-customer override of TG chat id; if null, uses global TELEGRAM_CHAT_ID
       tg_chat_id      TEXT,
-      status          TEXT    NOT NULL DEFAULT 'active',  -- active | disabled
+      status          TEXT    NOT NULL DEFAULT 'active',  -- active | disabled | terminated (清退)
       created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
       updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
     );
@@ -327,6 +327,18 @@ function init() {
   // Both empty => fall back to the legacy `zone_ids` field (or "*").
   ensureColumn('customers', 'tag_key',   `TEXT`);
   ensureColumn('customers', 'tag_value', `TEXT`);
+
+  // Customer termination (客户清退). When a customer is terminated:
+  //   - status becomes 'terminated' (excluded from sync / alerts /
+  //     min-commit settlement; recharges & manual usage writes rejected);
+  //   - the remaining balance is refunded as ONE negative `recharges` row
+  //     (method = 'refund'), so the derived balance lands exactly at 0 and
+  //     the ledger stays auditable;
+  //   - the fields below snapshot the settlement for display / audit.
+  ensureColumn('customers', 'terminated_at',     `TEXT`);
+  ensureColumn('customers', 'terminate_refund',  `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('customers', 'terminate_balance', `REAL NOT NULL DEFAULT 0`);
+  ensureColumn('customers', 'terminate_remark',  `TEXT`);
 
   // Make sure every (provider, scene) combo has a cost row (zeros until configured).
   const seedSceneCost = db.prepare(`
