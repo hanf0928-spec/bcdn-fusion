@@ -435,7 +435,7 @@ function listProviderSummaries(month) {
  */
 function getCustomerStats(customerId, costMap) {
   const cm = costMap || buildCostMap();
-  const c = db.prepare(`SELECT id, provider, scene, unit_price, unit_price_traffic, unit_price_request, unit_price_domain FROM customers WHERE id = ?`).get(customerId);
+  const c = db.prepare(`SELECT id, provider, scene, unit_price, unit_price_traffic, unit_price_request, unit_price_domain, min_commit_start_month FROM customers WHERE id = ?`).get(customerId);
   const provider = c ? c.provider : null;
   const scene    = c ? (c.scene || 'download') : 'download';
   const cost = resolveCost(cm, provider, scene);
@@ -465,11 +465,12 @@ function getCustomerStats(customerId, costMap) {
   // Revenue-side domain fee: peak domains × customer's own domain price.
   const totalDomainRevenueFee = round2(totalDomains * priceDomain);
 
-  // CN2 min-commit lifetime overlay.
+  // Min-commit lifetime overlay (any scene).
   //   For each settled month, the min-commit fee REPLACES that month's
   //   raw SUM(traffic_fee) in revenue (since fee = max(commit, actual) *
   //   price already covers the billable traffic at/above the commit
-  //   floor). Non-settled months keep their raw traffic fee.
+  //   floor). Non-settled months keep their raw traffic fee. Settlements
+  //   before the customer's min_commit_start_month are ignored.
   //
   //   totalRevenue = SUM(amount)  // = traffic_fee + request_fee across all months
   //                - SUM(traffic_fee of settled months)     // strip out the raw
@@ -477,11 +478,11 @@ function getCustomerStats(customerId, costMap) {
   //                + totalDomainRevenueFee
   let totalMinCommitFee     = 0;   // sum of chosen min-commit fees (final > mid)
   let displacedTrafficFee   = 0;   // sum of raw traffic_fee for the same months
-  if (scene === 'cn2') {
+  if (c) {
     const commitRows = db.prepare(`
       SELECT month, mode, fee FROM min_commit_records
-      WHERE customer_id = ?
-    `).all(customerId);
+      WHERE customer_id = ? AND month >= ?
+    `).all(customerId, commitStartMonth(c));
     const perMonth = new Map();
     for (const cr of commitRows) {
       const prev = perMonth.get(cr.month);
@@ -582,7 +583,7 @@ function getCustomerStats(customerId, costMap) {
  */
 function getCustomerMonthlyUsage(customerId, month, costMap) {
   const cm = costMap || buildCostMap();
-  const c = db.prepare(`SELECT provider, scene, unit_price_domain FROM customers WHERE id = ?`).get(customerId);
+  const c = db.prepare(`SELECT provider, scene, unit_price_domain, min_commit_start_month FROM customers WHERE id = ?`).get(customerId);
   const cost = resolveCost(cm, c && c.provider, c && (c.scene || 'download'));
   const priceDomain = c ? Number(c.unit_price_domain || 0) : 0;
 
@@ -604,19 +605,20 @@ function getCustomerMonthlyUsage(customerId, month, costMap) {
 
   const rows = db.prepare(sql).all(...params);
 
-  // CN2 min-commit: for each month, if we've settled a fee (see
+  // Min-commit (any scene): for each month, if we've settled a fee (see
   // services/minCommit.js), it replaces the raw traffic-fee portion of
   // monthly revenue. Priority: 'final' (locked settlement) overrides
   // 'mid' (preview settlement) so the same month can carry a preview
   // number from the 28th until the 1st-of-next-month cron replaces it
-  // with the definitive value.
+  // with the definitive value. Months before min_commit_start_month are
+  // ignored.
   const commitByMonth = new Map();
-  if (c && (c.scene || 'download') === 'cn2') {
+  if (c) {
     let cSql = `
       SELECT month, mode, fee, shortfall_gb, min_commit_gb, actual_gb, unit_price
-      FROM min_commit_records WHERE customer_id = ?
+      FROM min_commit_records WHERE customer_id = ? AND month >= ?
     `;
-    const cParams = [customerId];
+    const cParams = [customerId, commitStartMonth(c)];
     if (month) { cSql += ` AND month = ?`; cParams.push(month); }
     const commitRows = db.prepare(cSql).all(...cParams);
     for (const cr of commitRows) {
@@ -775,6 +777,15 @@ function listCustomersWithStats(month) {
 }
 
 // ---------- helpers ----------
+/**
+ * Lower bound (inclusive, YYYY-MM) for min-commit settlements that count
+ * toward revenue. '' sorts before every 'YYYY-MM', so "no start month"
+ * means every settlement counts.
+ */
+function commitStartMonth(c) {
+  const s = c && c.min_commit_start_month;
+  return (typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s)) ? s : '';
+}
 function round2(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
 function round4(n) { return Math.round((n + Number.EPSILON) * 10000) / 10000; }
 function nowYearMonth() {

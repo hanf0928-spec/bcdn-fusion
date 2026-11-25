@@ -311,12 +311,15 @@ function init() {
   ensureColumn('customers', 'traffic_adjust_delta_gb',      `REAL NOT NULL DEFAULT 0`);
   ensureColumn('customers', 'traffic_adjust_anchor_month',  `TEXT`);
 
-  // CN2-only: monthly minimum traffic commitment (保底流量, GB). When > 0
-  // AND scene = 'cn2', the min-commit scheduler will top-up the customer's
-  // monthly bill up to this floor. 0 (default) disables the mechanism.
+  // Monthly minimum traffic commitment (保底流量, GB), any scene. When > 0
+  // the min-commit scheduler bills the customer's monthly traffic at
+  // max(commit, actual). 0 (default) disables the mechanism.
   // See services/minCommit.js for the settlement logic and server.js for
   // the two cron slots (28th intra-month + 1st final settlement).
   ensureColumn('customers', 'min_commit_gb',                `REAL NOT NULL DEFAULT 0`);
+  // First month (YYYY-MM) the min-commit floor is charged. NULL = no
+  // restriction. Applies to every scene (download / vod / cn2).
+  ensureColumn('customers', 'min_commit_start_month',       `TEXT`);
 
   // EO-only: single resource tag (TagKey=TagValue) bound to the customer.
   // When both are present, sync.js asks tag.tencentcloudapi.com /

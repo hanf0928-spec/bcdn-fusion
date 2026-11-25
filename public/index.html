@@ -114,17 +114,29 @@
           </div>
         </div>
 
-        <div id="row-min-commit" class="hidden">
-          <label class="block text-xs font-medium text-slate-600 mb-1">
-            每月保底流量 <span class="text-slate-400 font-normal">TB（仅 CN2 场景生效；0 表示不启用；默认 3 TB）</span>
-          </label>
-          <input name="min_commit_tb" type="number" step="0.01" min="0" value="3"
-                 placeholder="例如 3 = 每月保底 3 TB"
-                 class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm num" />
+        <div id="row-min-commit">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-slate-600 mb-1">
+                每月保底流量 <span class="text-slate-400 font-normal">TB（全部场景可用；0 = 不启用）</span>
+              </label>
+              <input name="min_commit_tb" type="number" step="0.01" min="0" value="0"
+                     placeholder="例如 3 = 每月保底 3 TB"
+                     class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm num" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-600 mb-1">
+                保底起始月份 <span class="text-slate-400 font-normal">（留空 = 不限制）</span>
+              </label>
+              <input name="min_commit_start_month" type="month" placeholder="例如 2026-12"
+                     class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+            </div>
+          </div>
           <div class="text-xs text-slate-400 mt-1">
             系统在每月 28 日按当月流量做一次预结算，1 日再对上月做最终结算：
             当月流量费 = <strong class="text-slate-500">max(保底流量, 实际流量) × 客户流量单价</strong>，
-            即实际流量低于保底时按保底计费，高于保底时按实际计费。
+            即实际流量低于保底时按保底计费，高于保底时按实际计费。<br/>
+            起始月份之前的月份不收保底；若起始月份早于本月，保存时会自动补结算已结束且尚未最终结算的月份。
           </div>
         </div>
 

@@ -629,12 +629,11 @@ function renderDetailOverview(el) {
             $${fmt.money(c.unit_price_domain)} /个</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">告警阈值</dt><dd class="num">$ ${fmt.money(c.alert_threshold)} USDT</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">流量校准</dt><dd class="text-right text-xs">${renderAdjustSummary(c)}</dd></div>
-          ${(c.scene === 'cn2') ? `
           <div class="flex justify-between"><dt class="text-slate-500">保底流量</dt><dd class="num text-right">${
             Number(c.min_commit_gb || 0) > 0
-              ? `${fmt.traffic(c.min_commit_gb)} TB <span class="text-[10px] text-slate-400">/月</span>`
+              ? `${fmt.traffic(c.min_commit_gb)} TB <span class="text-[10px] text-slate-400">/月 · ${c.min_commit_start_month ? `自 ${fmt.esc(c.min_commit_start_month)} 起` : '不限起始月'}</span>`
               : '<span class="text-slate-400">未启用</span>'
-          }</dd></div>` : ''}
+          }</dd></div>
           <div class="flex justify-between"><dt class="text-slate-500">TG chat_id</dt><dd class="font-mono text-xs">${fmt.esc(c.tg_chat_id || '（使用全局）')}</dd></div>
           <div class="pt-2 border-t border-slate-100"><dt class="text-slate-500 mb-1">备注</dt><dd class="text-slate-700 whitespace-pre-wrap">${fmt.esc(c.remark || '—')}</dd></div>
         </dl>
@@ -932,13 +931,14 @@ function openCustomerModal(id) {
         form.traffic_adjust_anchor_month.value = c.traffic_adjust_anchor_month || '';
       }
       if (form.min_commit_tb) {
-        // Backend stores GB, form asks for TB. Empty value falls back to
-        // the field's default (3 TB); we only actively overwrite when the
-        // customer has a stored value.
+        // Backend stores GB, form asks for TB.
         const storedGb = Number(c.min_commit_gb || 0);
         form.min_commit_tb.value = storedGb > 0
           ? Number((storedGb / GB_PER_TB).toFixed(4))
           : 0;
+      }
+      if (form.min_commit_start_month) {
+        form.min_commit_start_month.value = c.min_commit_start_month || '';
       }
       form.tg_chat_id.value   = c.tg_chat_id || '';
       form.remark.value       = c.remark || '';
@@ -978,18 +978,11 @@ function syncProviderFieldsVisibility() {
   if (rowKey2) rowKey2.classList.toggle('hidden', !isCcdn);
   const rowUser2 = document.getElementById('row-api-user2');
   if (rowUser2) rowUser2.classList.toggle('hidden', !isCcdn);
-  // CN2 min-commit is scene-gated (visible only when scene='cn2').
-  const scene = form.scene && form.scene.value;
-  const rowMinCommit = document.getElementById('row-min-commit');
-  if (rowMinCommit) rowMinCommit.classList.toggle('hidden', scene !== 'cn2');
 }
 
 // Toggle provider-specific fields whenever the operator switches providers.
 document.querySelector('#form-customer [name=provider]')
   .addEventListener('change', syncProviderFieldsVisibility);
-// Toggle scene-specific fields (e.g. CN2 min-commit) on scene change.
-const _sceneSel = document.querySelector('#form-customer [name=scene]');
-if (_sceneSel) _sceneSel.addEventListener('change', syncProviderFieldsVisibility);
 
 // "测试标签解析" button — only meaningful when editing an existing EO
 // customer (we need the saved SecretId/SecretKey to call Tencent Cloud).
@@ -1075,13 +1068,9 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
     traffic_adjust_pct:      Number.isFinite(adjPctVal)  ? adjPctVal  : 0,
     traffic_adjust_delta_gb: Number.isFinite(adjDeltaTb) ? adjDeltaTb * GB_PER_TB : 0,
     traffic_adjust_anchor_month: adjAnchorMonth || null,
-    // CN2 min-commit. UI edits TB (default 3 TB), backend stores GB.
-    // For non-CN2 scenes we intentionally send 0 so switching scene
-    // clears the value (avoids surprising residual settlements after
-    // a scene change).
-    min_commit_gb: (f.scene && f.scene.value === 'cn2')
-      ? Math.max(0, (parseFloat((f.min_commit_tb && f.min_commit_tb.value) || '0') || 0) * GB_PER_TB)
-      : 0,
+    // Monthly min-commit (any scene). UI edits TB, backend stores GB.
+    min_commit_gb: Math.max(0, (parseFloat((f.min_commit_tb && f.min_commit_tb.value) || '0') || 0) * GB_PER_TB),
+    min_commit_start_month: (f.min_commit_start_month && f.min_commit_start_month.value) || null,
   };
   // EO uses Zone IDs; only send for that provider so we don't accidentally
   // overwrite the field on other providers.
@@ -1110,13 +1099,12 @@ document.getElementById('form-customer').addEventListener('submit', async (e) =>
   }
 
   try {
-    if (editing) {
-      await API.put(`/api/customers/${f.id.value}`, payload);
-      UI.toast('客户已更新');
-    } else {
-      await API.post('/api/customers', payload);
-      UI.toast('客户已创建');
-    }
+    const r = editing
+      ? await API.put(`/api/customers/${f.id.value}`, payload)
+      : await API.post('/api/customers', payload);
+    const filled = (r && r.min_commit_backfilled) || [];
+    const base = editing ? '客户已更新' : '客户已创建';
+    UI.toast(filled.length ? `${base}，已补结算保底月份：${filled.join('、')}` : base);
     UI.closeModal('modal-customer');
     await reloadAndRender();
   } catch (err) {

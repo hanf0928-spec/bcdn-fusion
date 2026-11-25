@@ -84,9 +84,10 @@ if (cron.validate(syncCron)) {
 }
 
 // =====================================================
-// CN2 minimum-traffic-commitment settlements.
+// Monthly minimum-traffic-commitment settlements (all scenes).
 //
-// Business rule: for every customer with scene='cn2' and min_commit_gb > 0,
+// Business rule: for every customer with min_commit_gb > 0 (any scene),
+// skipping months before its min_commit_start_month,
 //   - on the 28th of each month  → settle CURRENT month (mode='mid')
 //   - on the 1st  of each month  → settle PREVIOUS month (mode='final')
 //

@@ -1,11 +1,16 @@
 'use strict';
 
 /**
- * CN2 minimum-traffic-commitment settlement.
+ * Monthly minimum-traffic-commitment (保底流量) settlement.
  *
  * Business rules (from product spec):
- *   - Only applies to customers whose scene = 'cn2' AND
+ *   - Applies to customers of ANY scene (download / vod / cn2) whose
  *     min_commit_gb > 0.
+ *   - Optional `min_commit_start_month` (YYYY-MM): the first month the
+ *     floor is charged. Months before it are never settled, and any
+ *     settlement rows that pre-date it are ignored by revenue (stats.js),
+ *     so moving the start month later takes effect immediately.
+ *     NULL = no restriction (charged from whichever month gets settled).
  *   - Two scheduled settlements per month:
  *       * mode='mid'   : fires on the 28th of the current month.
  *                        Settles the CURRENT month using the
@@ -69,7 +74,7 @@ function settleForMonth(customerId, month, mode) {
   }
 
   const c = db.prepare(`
-    SELECT id, name, scene, status, min_commit_gb,
+    SELECT id, name, scene, status, min_commit_gb, min_commit_start_month,
            unit_price_traffic, unit_price
     FROM customers WHERE id = ?
   `).get(customerId);
@@ -78,13 +83,15 @@ function settleForMonth(customerId, month, mode) {
   // a new commit fee afterwards, or the balance would go negative again.
   if (c.status === 'terminated') return null;
 
-  // Eligibility gate: CN2 scene + positive commitment. We deliberately
-  // still settle 'disabled' customers so that closing an account mid-
-  // month doesn't drop the commit — operators can delete the customer
-  // if they truly want the row gone.
-  const scene = c.scene || 'download';
+  // Eligibility gate: positive commitment (any scene) and the month is on
+  // or after the configured start month. We deliberately still settle
+  // 'disabled' customers so that closing an account mid-month doesn't
+  // drop the commit — operators can delete the customer if they truly
+  // want the row gone.
   const commit = Number(c.min_commit_gb || 0);
-  if (scene !== 'cn2' || commit <= 0) return null;
+  if (commit <= 0) return null;
+  const startMonth = isValidMonth(c.min_commit_start_month) ? c.min_commit_start_month : null;
+  if (startMonth && month < startMonth) return null;
 
   const price = Number(c.unit_price_traffic || c.unit_price || 0);
 
@@ -155,7 +162,7 @@ function settleAll(mode, month) {
 
   const rows = db.prepare(`
     SELECT id FROM customers
-    WHERE scene = 'cn2' AND min_commit_gb > 0
+    WHERE min_commit_gb > 0 AND status <> 'terminated'
   `).all();
 
   const results = [];
@@ -168,6 +175,52 @@ function settleAll(mode, month) {
     }
   }
   return { mode, month: targetMonth, total: rows.length, results };
+}
+
+/** Return 'YYYY-MM' for the month immediately after `ym`. */
+function nextMonth(ym) {
+  const [y, m] = String(ym).split('-').map(Number);
+  const d = new Date(y, m, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * Back-fill FINAL settlements for months that are already closed.
+ *
+ * Called after a customer's commit / start month is saved. The cron only
+ * ever settles "previous month" (1st) and "current month" (28th), so when
+ * an operator sets a start month in the past, the closed months between
+ * [start, previous month] would otherwise never be charged.
+ *
+ * Only months WITHOUT an existing 'final' row are settled: a final
+ * settlement is the locked-in bill and is never silently rewritten here
+ * (use POST /customers/:id/min-commit/settle to deliberately re-settle).
+ * Without a start month nothing is back-filled (legacy behaviour).
+ * Capped at 120 months as a guard against absurd start months.
+ *
+ * @returns {Array} the newly created settlement rows
+ */
+function backfillFinal(customerId) {
+  const c = db.prepare(`
+    SELECT id, status, min_commit_gb, min_commit_start_month
+    FROM customers WHERE id = ?
+  `).get(customerId);
+  if (!c || c.status === 'terminated') return [];
+  if (Number(c.min_commit_gb || 0) <= 0) return [];
+  if (!isValidMonth(c.min_commit_start_month)) return [];
+
+  const lastClosed = previousMonth(currentMonth());
+  const hasFinal = db.prepare(`
+    SELECT 1 FROM min_commit_records WHERE customer_id = ? AND month = ? AND mode = 'final'
+  `);
+  const out = [];
+  let m = c.min_commit_start_month;
+  for (let i = 0; i < 120 && m <= lastClosed; i++, m = nextMonth(m)) {
+    if (hasFinal.get(customerId, m)) continue;
+    const r = settleForMonth(customerId, m, 'final');
+    if (r) out.push(r);
+  }
+  return out;
 }
 
 /**
@@ -208,8 +261,10 @@ function feeMapByMonth(customerId) {
 module.exports = {
   settleForMonth,
   settleAll,
+  backfillFinal,
   listForCustomer,
   feeMapByMonth,
   currentMonth,
   previousMonth,
+  isValidMonth,
 };

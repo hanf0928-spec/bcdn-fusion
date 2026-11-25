@@ -33,12 +33,17 @@ function clampPct(p) {
  *   - anything else     : rejected (callers should send YYYY-MM)
  */
 function normAnchorMonth(v) {
+  return normMonthField(v, 'traffic_adjust_anchor_month');
+}
+
+/** Same tri-state semantics as normAnchorMonth, for any YYYY-MM field. */
+function normMonthField(v, field) {
   if (v === undefined) return undefined;
   if (v === null) return null;
   const s = String(v).trim();
   if (!s) return null;
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(s)) {
-    throw new Error('traffic_adjust_anchor_month must be YYYY-MM');
+    throw new Error(`${field} must be YYYY-MM`);
   }
   return s;
 }
@@ -155,13 +160,15 @@ router.post('/customers', (req, res) => {
     unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
     alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
-    min_commit_gb,
+    min_commit_gb, min_commit_start_month,
   } = req.body || {};
   if (!name || !String(name).trim()) return fail(res, 400, 'name is required');
 
-  let anchorMonthIn;
-  try { anchorMonthIn = normAnchorMonth(traffic_adjust_anchor_month); }
-  catch (e) { return fail(res, 400, e.message); }
+  let anchorMonthIn, commitStartIn;
+  try {
+    anchorMonthIn = normAnchorMonth(traffic_adjust_anchor_month);
+    commitStartIn = normMonthField(min_commit_start_month, 'min_commit_start_month');
+  } catch (e) { return fail(res, 400, e.message); }
 
   // Three-mode pricing. `unit_price_traffic` is the primary source of
   // truth; legacy `unit_price` is kept as a mirror for backwards-compat
@@ -170,9 +177,7 @@ router.post('/customers', (req, res) => {
   const priceRequest = num(unit_price_request, 0);
   const priceDomain  = num(unit_price_domain,  0);
 
-  // CN2 min-commit is only meaningful for scene='cn2'. We still store any
-  // value the caller sends (so switching scene back to cn2 recovers it),
-  // but negative values are clamped to 0.
+  // Monthly min-commit (any scene). Negative values are clamped to 0.
   const minCommitGb = Math.max(0, num(min_commit_gb, 0));
 
   try {
@@ -183,8 +188,8 @@ router.post('/customers', (req, res) => {
          unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
          alert_threshold, tg_chat_id, status,
          traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
-         min_commit_gb)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         min_commit_gb, min_commit_start_month)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       String(name).trim(),
       contact || null,
@@ -216,8 +221,12 @@ router.post('/customers', (req, res) => {
       num(traffic_adjust_delta_gb, 0),
       anchorMonthIn === undefined ? null : anchorMonthIn,
       minCommitGb,
+      commitStartIn === undefined ? null : commitStartIn,
     );
-    ok(res, { id: r.lastInsertRowid });
+    const newId = Number(r.lastInsertRowid);
+    // Start month in the past → bill the already-closed months now.
+    const backfilled = minCommit.backfillFinal(newId);
+    ok(res, { id: newId, min_commit_backfilled: backfilled.map(b => b.month) });
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) return fail(res, 400, 'name already exists');
     fail(res, 500, e.message);
@@ -237,12 +246,14 @@ router.put('/customers/:id', (req, res) => {
     unit_price, unit_price_traffic, unit_price_request, unit_price_domain,
     alert_threshold, tg_chat_id, status, scene,
     traffic_adjust_pct, traffic_adjust_delta_gb, traffic_adjust_anchor_month,
-    min_commit_gb,
+    min_commit_gb, min_commit_start_month,
   } = req.body || {};
 
-  let anchorMonthIn;
-  try { anchorMonthIn = normAnchorMonth(traffic_adjust_anchor_month); }
-  catch (e) { return fail(res, 400, e.message); }
+  let anchorMonthIn, commitStartIn;
+  try {
+    anchorMonthIn = normAnchorMonth(traffic_adjust_anchor_month);
+    commitStartIn = normMonthField(min_commit_start_month, 'min_commit_start_month');
+  } catch (e) { return fail(res, 400, e.message); }
 
   // For api_key: if client sends `null`, clear; if undefined/empty string,
   // keep existing (so the masked-key UI can save without exposing the key).
@@ -306,10 +317,16 @@ router.put('/customers/:id', (req, res) => {
     ? num(unit_price_domain, c.unit_price_domain || 0)
     : Number(c.unit_price_domain || 0);
 
-  // CN2 min-commit: undefined => keep, otherwise clamp to >= 0.
-  const nextMinCommitGb = (min_commit_gb === undefined)
+  // Min-commit (any scene): undefined => keep, otherwise clamp to >= 0.
+  // Terminated customers are settled & refunded: their commit config is
+  // frozen, since the start month directly changes historical revenue.
+  const isTerminated = c.status === 'terminated';
+  const nextMinCommitGb = (min_commit_gb === undefined || isTerminated)
     ? Number(c.min_commit_gb || 0)
     : Math.max(0, num(min_commit_gb, 0));
+  const nextCommitStart = (commitStartIn === undefined || isTerminated)
+    ? (c.min_commit_start_month || null)
+    : commitStartIn;
 
   db.prepare(`
     UPDATE customers SET
@@ -337,6 +354,7 @@ router.put('/customers/:id', (req, res) => {
       traffic_adjust_delta_gb = ?,
       traffic_adjust_anchor_month = ?,
       min_commit_gb = ?,
+      min_commit_start_month = ?,
       updated_at = datetime('now','localtime')
     WHERE id = ?
   `).run(
@@ -369,6 +387,7 @@ router.put('/customers/:id', (req, res) => {
     nextAdjDelta,
     nextAnchorMonth,
     nextMinCommitGb,
+    nextCommitStart,
     id,
   );
   // If any of the three price knobs changed, recompute every usage_records
@@ -384,7 +403,11 @@ router.put('/customers/:id', (req, res) => {
     recomputed = stats.recomputeUsageAmounts(id);
   }
 
-  ok(res, { id, recomputed });
+  // Start month in the past → bill closed months that have no final
+  // settlement yet (no-op without a start month / for terminated).
+  const backfilled = minCommit.backfillFinal(id);
+
+  ok(res, { id, recomputed, min_commit_backfilled: backfilled.map(b => b.month) });
 });
 
 // Delete
@@ -640,7 +663,7 @@ router.post('/customers/:id/eo/resolve-tag', async (req, res) => {
 });
 
 // =====================================================
-// CN2 Minimum-traffic commitment settlement
+// Monthly minimum-traffic commitment settlement (all scenes)
 //
 //   Two scheduled runs per month (see src/server.js cron):
 //     - 28th : mode='mid'   → settles the current month (preview)
@@ -672,7 +695,7 @@ router.post('/customers/:id/min-commit/settle', (req, res) => {
     : minCommit.currentMonth());
   try {
     const out = minCommit.settleForMonth(id, month, mode);
-    if (!out) return fail(res, 400, 'customer is not eligible (needs scene=cn2 and min_commit_gb > 0)');
+    if (!out) return fail(res, 400, 'customer is not eligible (needs min_commit_gb > 0, month >= min_commit_start_month, not terminated)');
     ok(res, out);
   } catch (e) {
     fail(res, 500, e.message);
